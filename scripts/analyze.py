@@ -9,6 +9,7 @@ analyze.py
 stage0.py 의 분석 로직에 있던 버그를 고쳤다:
   - 페이지별 lines 배열 중 가장 큰 것 하나만 세던 문제 -> 전체 합산
   - page 번호를 잃어버리던 문제 -> 페이지 단위로 보존
+  - 값이 없는(None) 필드에서 포맷 오류가 나던 문제 -> 안전 포매터
 판정 룰 설계에 필요한 교차표를 전부 뽑는다.
 """
 
@@ -83,6 +84,23 @@ def w_of(ln):
 
 def txt(ln):
     return (ln.get("text") or ln.get("text_display") or "").strip()
+
+
+def s(v, w=0, dash="-"):
+    """값이 없어도(None) 안전하게 폭 맞춰 문자열로. 오른쪽 정렬."""
+    if v is None:
+        t = dash
+    elif isinstance(v, float):
+        t = f"{v:.0f}"
+    else:
+        t = str(v)
+    return t.rjust(w) if w else t
+
+
+def sl(v, w=0, dash="-"):
+    """s() 의 왼쪽 정렬 버전."""
+    t = dash if v is None else str(v)
+    return t.ljust(w) if w else t
 
 
 def hist(values, bins=24, width=40):
@@ -174,7 +192,7 @@ def main():
     A("| column | 줄 |")
     A("|---|---|")
     for c, n in sorted(cols.items(), key=lambda x: (x[0] is None, x[0])):
-        A(f"| {c} | {n:,} |")
+        A(f"| {s(c)} | {n:,} |")
     A("")
     A("### column x 좌표 범위")
     A("")
@@ -187,7 +205,7 @@ def main():
             bycol[r.get("column")].append(x)
     for c in sorted(bycol, key=lambda v: (v is None, v)):
         xs = sorted(bycol[c])
-        A(f"| {c} | {xs[0]:.0f} | {xs[-1]:.0f} | "
+        A(f"| {s(c)} | {xs[0]:.0f} | {xs[-1]:.0f} | "
           f"{xs[len(xs)//2]:.0f} | {len(xs):,} |")
     A("")
 
@@ -196,7 +214,7 @@ def main():
     A("")
     colvals = sorted({r.get("column") for r in all_rows},
                      key=lambda v: (v is None, v))
-    A("| type | " + " | ".join(str(c) for c in colvals) + " |")
+    A("| type | " + " | ".join(s(c) for c in colvals) + " |")
     A("|---" * (len(colvals) + 1) + "|")
     cross = defaultdict(Counter)
     for r in all_rows:
@@ -263,8 +281,8 @@ def main():
     n = 0
     for r in all_rows:
         if r.get("type") == "page_info":
-            A(f"  x={x_of(r):>5} y={y_of(r):>5} col={r.get('column')}  "
-              f"{txt(r)[:60]}")
+            A(f"  x={s(x_of(r),5)} y={s(y_of(r),5)} "
+              f"col={s(r.get('column'))}  {txt(r)[:60]}")
             n += 1
             if n >= 20:
                 break
@@ -280,11 +298,11 @@ def main():
     A("")
     A("```")
     for r in mcb[:10]:
-        A(f"  [block] file={r['_file'][:22]} p={r.get('_page')} "
-          f"x={x_of(r)} y={y_of(r)} col={r.get('column')}")
+        A(f"  [block] file={r['_file'][:22]} p={s(r.get('_page'))} "
+          f"x={s(x_of(r))} y={s(y_of(r))} col={s(r.get('column'))}")
         A(f"          {txt(r)[:70]}")
     for r in mco[:10]:
-        A(f"  [option] x={x_of(r)} y={y_of(r)}  {txt(r)[:60]}")
+        A(f"  [option] x={s(x_of(r))} y={s(y_of(r))}  {txt(r)[:60]}")
     A("```")
     A("")
 
@@ -303,8 +321,9 @@ def main():
     A("```")
     for t in ("diagram", "chart"):
         for r in [x for x in all_rows if x.get("type") == t][:8]:
-            A(f"  [{t}] p={r.get('_page')} x={x_of(r)} y={y_of(r)} "
-              f"w={w_of(r)} col={r.get('column')} sub={r.get('subtype')}")
+            A(f"  [{t}] p={s(r.get('_page'))} x={s(x_of(r))} "
+              f"y={s(y_of(r))} w={s(w_of(r))} col={s(r.get('column'))} "
+              f"sub={s(r.get('subtype'))}")
     A("```")
     A("")
 
@@ -332,8 +351,9 @@ def main():
         fs = sorted(f for f in (r.get("font_size") for r in items)
                     if isinstance(f, (int, float)))
         tp = Counter(r.get("type") for r in items).most_common(2)
-        A(f"| {name} | {len(items)} | "
-          f"{xs[len(xs)//2]:.0f} | {fs[len(fs)//2]:.0f} | {dict(tp)} |")
+        xm = f"{xs[len(xs)//2]:.0f}" if xs else "-"
+        fm = f"{fs[len(fs)//2]:.0f}" if fs else "-"
+        A(f"| {name} | {len(items)} | {xm} | {fm} | {dict(tp)} |")
     A("")
     A("### 적중 예시")
     A("")
@@ -344,9 +364,9 @@ def main():
             continue
         A(f"[{name}]  {len(items)}건")
         for r in items[:args.examples]:
-            A(f"  x={x_of(r):>5} y={y_of(r):>5} col={r.get('column')} "
-              f"fs={r.get('font_size')} type={r.get('type')[:18]:<18} "
-              f"{txt(r)[:52]}")
+            A(f"  x={s(x_of(r),5)} y={s(y_of(r),5)} "
+              f"col={s(r.get('column'))} fs={s(r.get('font_size'),3)} "
+              f"type={sl(r.get('type'),18)[:18]} {txt(r)[:52]}")
     A("```")
     A("")
 
@@ -363,10 +383,10 @@ def main():
                  and isinstance(x_of(r), (int, float))
                  and x_of(r) <= left + tol
                  and txt(r)]
-        A(f"[column {c}] 좌단 x={left:.0f}±{tol}  해당 {len(cands)}줄")
+        A(f"[column {s(c)}] 좌단 x={left:.0f}±{tol}  해당 {len(cands)}줄")
         for r in cands[:14]:
-            A(f"  x={x_of(r):>5} fs={r.get('font_size'):>3} "
-              f"{str(r.get('type'))[:16]:<16} {txt(r)[:48]}")
+            A(f"  x={s(x_of(r),5)} fs={s(r.get('font_size'),3)} "
+              f"{sl(r.get('type'),16)[:16]} {txt(r)[:48]}")
         A("")
     A("```")
     A("")
@@ -382,9 +402,9 @@ def main():
     A("```")
     for r in sorted(pg_rows, key=lambda r: (r.get("column") or 0,
                                             y_of(r) or 0))[:60]:
-        A(f"  p{r.get('_page')} c{r.get('column')} "
-          f"x={x_of(r):>5} y={y_of(r):>5} fs={r.get('font_size'):>3} "
-          f"{str(r.get('type'))[:17]:<17} {txt(r)[:46]}")
+        A(f"  p{s(r.get('_page'))} c{s(r.get('column'))} "
+          f"x={s(x_of(r),5)} y={s(y_of(r),5)} fs={s(r.get('font_size'),3)} "
+          f"{sl(r.get('type'),17)[:17]} {txt(r)[:46]}")
     A("```")
     A("")
 
