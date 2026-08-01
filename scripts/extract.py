@@ -10,6 +10,11 @@ v2 에서 고친 것:
   - 예제/유제는 풀이가 서술문으로 이어지므로 서술문에서 끊지 않는다
   - 발문이 그림을 가리키는데 본문에 그림이 없으면 같은 높이대의 그림을 추정해 붙인다
   - 그래도 못 찾으면 '그림 없음' 으로 따로 경고한다
+
+v3 에서 고친 것:
+  - 윗줄에 딸린 줄(parent_id 있음)을 무조건 시작 후보에서 빼던 것을 바로잡았다.
+    Mathpix 가 쪽 전체를 한 덩어리(column)로 묶으면 진짜 발문까지 그 덩어리의
+    자식이 되어 통째로 사라졌다. 이제 부모가 묶음 상자면 통과시킨다.
 """
 
 import argparse
@@ -50,6 +55,9 @@ BODY_TYPES = {"text", "math", "list_item", "multiple_choice_block",
               "multiple_choice_option", "section_header", "equation_number",
               "table", "simple_cell", "complex_cell", "table_row",
               "table_column", "form_field", "figure_label"}
+
+# 내용이 아니라 자리만 잡는 묶음 상자. 이 밑에 딸린 줄은 곁글이 아니다.
+CONTAINER_TYPES = {"column", "container", "group", "region", "block"}
 
 DROP_TYPES = {"page_info"}
 FIGURE_TYPES = {"diagram", "chart"}
@@ -241,10 +249,24 @@ def build(rows, page_width):
         ry(ln) or 0))
 
     # 3) 시작 후보
+    # parent_id 가 있어도 부모가 '묶음 상자'(column 등) 면 통과시킨다.
+    # Mathpix 가 쪽 전체를 한 덩어리로 묶어버리면 진짜 발문까지
+    # 그 덩어리의 자식이 되어 통째로 사라지기 때문이다.
+    by_id = {}
+    for ln in rows:
+        lid = ln.get("id")
+        if lid is not None:
+            by_id[(ln.get("_file"), lid)] = ln
+
     cands = []
     for i, ln in enumerate(live):
-        if ln.get("parent_id"):
-            continue
+        pid = ln.get("parent_id")
+        if pid:
+            par = by_id.get((ln.get("_file"), pid))
+            # 부모를 못 찾으면 판단할 근거가 없으므로 통과시킨다.
+            # (뒤에 오는 x 대역·글자크기 조건이 한 번 더 거른다)
+            if par is not None and par.get("type") not in CONTAINER_TYPES:
+                continue
         if ln.get("type") not in BODY_TYPES:
             continue
         m = match_start(ln)
