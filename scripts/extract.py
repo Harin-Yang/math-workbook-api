@@ -20,6 +20,8 @@ v4 에서 고친 것:
     '풀이 / 답 / 정답 / 증명 / 해설' 이 나오면 거기서 끊는다.
   - '탐구 (1)' 처럼 괄호가 붙은 것은 탐구 활동의 소문항이므로 문제로 세지 않는다.
   - 번호를 억지로 키우던 보정을 없씔다. 소단원이 바뀌면 번호는 1로 돌아간다.
+  - 껍데기 판정을 타입 이름이 아니라 '글자가 없는 줄' 로 바꿨다.
+    Mathpix 가 발문을 list_item 껍데기로 감싸는 경우가 있어 통째로 빠졌다.
 """
 
 import argparse
@@ -63,6 +65,8 @@ BODY_TYPES = {"text", "math", "list_item", "multiple_choice_block",
               "table_column", "form_field", "figure_label"}
 
 # 내용이 아니라 자리만 잡는 묶음 상자. 이 밑에 딸린 줄은 곁글이 아니다.
+# 타입 이름은 판마다 달라지므로(column / list_item / ...) 이름으로 판단하지 않고,
+# '글자가 없는 껍데기' 인지로 판단한다. is_shell() 참고.
 CONTAINER_TYPES = {"column", "container", "group", "region", "block"}
 
 DROP_TYPES = {"page_info"}
@@ -132,6 +136,17 @@ def is_image_md(t):
 def is_display_math(ln):
     t = txt(ln)
     return ln.get("type") == "math" or t.startswith("\\[") or t.startswith("$$")
+
+
+def is_shell(ln):
+    """자리만 잡는 껍데기 줄인가.
+
+    Mathpix 는 발문을 list_item / column 같은 빈 껍데기로 한 번 감싸고
+    글자는 그 자식 줄에 넣는다. 껍데기에 딸렸다는 이유로 발문을 버리면 안 된다.
+    """
+    if ln.get("type") in CONTAINER_TYPES:
+        return True
+    return not txt(ln)
 
 
 def match_start(ln):
@@ -256,9 +271,9 @@ def build(rows, page_width):
         ry(ln) or 0))
 
     # 3) 시작 후보
-    # parent_id 가 있어도 부모가 '묶음 상자'(column 등) 면 통과시킨다.
-    # Mathpix 가 쪽 전체를 한 덩어리로 묶어버리면 진짜 발문까지
-    # 그 덩어리의 자식이 되어 통째로 사라지기 때문이다.
+    # parent_id 가 있어도 부모가 빈 껍데기면 통과시킨다.
+    # Mathpix 가 발문을 column / list_item 껍데기로 감싸면
+    # 진짜 발문까지 그 껍데기의 자식이 되어 통째로 사라지기 때문이다.
     by_id = {}
     for ln in rows:
         lid = ln.get("id")
@@ -272,7 +287,7 @@ def build(rows, page_width):
             par = by_id.get((ln.get("_file"), pid))
             # 부모를 못 찾으면 판단할 근거가 없으므로 통과시킨다.
             # (뒤에 오는 x 대역·글자크기 조건이 한 번 더 거른다)
-            if par is not None and par.get("type") not in CONTAINER_TYPES:
+            if par is not None and not is_shell(par):
                 continue
         if ln.get("type") not in BODY_TYPES:
             continue
