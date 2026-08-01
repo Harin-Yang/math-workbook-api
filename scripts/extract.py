@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract.py  v4
+extract.py  v5
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
@@ -12,8 +12,6 @@ v2 에서 고친 것:
 
 v3 에서 고친 것:
   - 윗줄에 딸린 줄(parent_id 있음)을 무조건 시작 후보에서 빼던 것을 바로잡았다.
-    Mathpix 가 쪽 전체를 한 덩어리(column)로 묶으면 진짜 발문까지 그 덩어리의
-    자식이 되어 통째로 사라졌다. 이제 부모가 묶음 상자면 통과시킨다.
 
 v4 에서 고친 것:
   - 예제·유제의 풀이를 본문에 끌고 오던 것을 바로잡았다.
@@ -22,6 +20,11 @@ v4 에서 고친 것:
   - 번호를 억지로 키우던 보정을 없씔다. 소단원이 바뀌면 번호는 1로 돌아간다.
   - 껍데기 판정을 타입 이름이 아니라 '글자가 없는 줄' 로 바꿨다.
     Mathpix 가 발문을 list_item 껍데기로 감싸는 경우가 있어 통째로 빠졌다.
+
+v5 에서 고친 것:
+  - 끝 판정에 '세로 간격' 을 더했다. 발문이 끝난 뒤 줄 간격이 평소의 4배를 넘으면
+    다른 덩어리로 보고 끊는다. 증명 과정이 서술문으로 이어져 어미로는 못 끊던
+    경우(문제 둘이 하나로 붙는 문제)를 잡는다.
 """
 
 import argparse
@@ -75,6 +78,9 @@ FIGURE_TYPES = {"diagram", "chart"}
 CONTINUE_SUBTYPES = {"continues_line_space", "continues_line_no_space",
                      "continues_line_newline"}
 
+GAP_FACTOR = 4          # 보통 줄 간격의 몇 배부터 '다른 덩어리' 로 볼지
+GAP_MIN = 60            # 그래도 이보다 좁으면 끊지 않는다
+
 MAX_TITLE_FONT = 60
 FIGURE_MAX_WIDTH_RATIO = 0.75
 MAX_BODY_LINES = 60
@@ -123,6 +129,10 @@ def ry(ln):
 
 def rw(ln):
     return (ln.get("region") or {}).get("width")
+
+
+def rh(ln):
+    return (ln.get("region") or {}).get("height")
 
 
 def txt(ln):
@@ -185,7 +195,40 @@ def fix_number(raw, prev):
     return pick, (pick != cands[-1])
 
 
-def find_end(live, start, hard_end, kind):
+def line_gap(prev, cur):
+    """앞줄 아래끝에서 이 줄 위끝까지의 빈 공간. 못 재면 None."""
+    if prev.get("_file") != cur.get("_file"):
+        return None
+    if prev.get("_page") != cur.get("_page"):
+        return None
+    y0, y1 = ry(prev), ry(cur)
+    if not isinstance(y0, (int, float)) or not isinstance(y1, (int, float)):
+        return None
+    h0 = rh(prev)
+    if isinstance(h0, (int, float)):
+        y0 = y0 + h0
+    return y1 - y0
+
+
+def learn_gaps(live):
+    """파일별로 '보통 줄 간격' 을 배운다. 반환: {파일: 끊을 문턴}"""
+    per = defaultdict(list)
+    for a, b in zip(live, live[1:]):
+        g = line_gap(a, b)
+        if g is None:
+            continue
+        if -20 <= g <= 400:
+            per[a.get("_file")].append(g)
+
+    out = {}
+    for fname, gs in per.items():
+        gs.sort()
+        med = gs[len(gs) // 2] if gs else 0
+        out[fname] = max(GAP_MIN, med * GAP_FACTOR)
+    return out
+
+
+def find_end(live, start, hard_end, kind, gap_thr=None):
     """문제의 끝 위치를 찾는다. 반환: (끝 인덱스(미포함), 종료 사유)"""
     head = live[start]
     head_file = head.get("_file")
@@ -212,6 +255,14 @@ def find_end(live, start, hard_end, kind):
 
         if typ == "section_header":
             return i, "단원제목"
+
+        # 발문이 끝난 뒤 세로 간격이 확 벌어지면 다른 덩어리다.
+        # (증명 과정이나 다음 발문이 서술문으로 이어져 어미로는 못 끊는 경우)
+        if seen_order and gap_thr:
+            thr = gap_thr.get(ln.get("_file"))
+            g = line_gap(live[i - 1], ln)
+            if thr and g is not None and g > thr:
+                return i, "간격"
 
         if i - start >= MAX_BODY_LINES:
             return i, "길이초과"
@@ -272,8 +323,6 @@ def build(rows, page_width):
 
     # 3) 시작 후보
     # parent_id 가 있어도 부모가 빈 껍데기면 통과시킨다.
-    # Mathpix 가 발문을 column / list_item 껍데기로 감싸면
-    # 진짜 발문까지 그 껍데기의 자식이 되어 통째로 사라지기 때문이다.
     by_id = {}
     for ln in rows:
         lid = ln.get("id")
@@ -286,7 +335,6 @@ def build(rows, page_width):
         if pid:
             par = by_id.get((ln.get("_file"), pid))
             # 부모를 못 찾으면 판단할 근거가 없으므로 통과시킨다.
-            # (뒤에 오는 x 대역·글자크기 조건이 한 번 더 거른다)
             if par is not None and not is_shell(par):
                 continue
         if ln.get("type") not in BODY_TYPES:
@@ -333,12 +381,13 @@ def build(rows, page_width):
             prev[key] = num
 
     # 6) 경계 확정
+    gap_thr = learn_gaps(live)
     problems = []
     used_fig = set()
     for n, c in enumerate(kept):
         start = c["idx"]
         hard = kept[n + 1]["idx"] if n + 1 < len(kept) else len(live)
-        end, reason = find_end(live, start, hard, c["kind"])
+        end, reason = find_end(live, start, hard, c["kind"], gap_thr)
         body = live[start:end]
         figs = [b for b in body if b.get("type") in FIGURE_TYPES]
         for f in figs:
@@ -388,7 +437,7 @@ def build(rows, page_width):
 
     return problems, kept, dropped_x, live, {
         "dropped_bg": dropped_bg, "orphan": orphan, "bands": bands,
-        "need_fig": need_fig}
+        "need_fig": need_fig, "gap_thr": gap_thr}
 
 
 def check_sequence(problems):
@@ -427,7 +476,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     W = []
     A = W.append
 
-    A("# 문제 추출 결과 v4")
+    A("# 문제 추출 결과 v5")
     A("")
     A(f"- 전체 줄 {len(rows):,} -> 유효 줄 {len(live):,}")
     A(f"- 시작 후보 {len(kept)+len(dropped_x)} -> 채택 {len(kept)} "
@@ -488,13 +537,14 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
         A(f"- {w}")
     A("")
 
-    A("## 5. 파일별 x 대역")
+    A("## 5. 파일별 x 대역·간격")
     A("")
-    A("| 파일 | 중심 x | 문제 수 |")
-    A("|---|---|---|")
+    A("| 파일 | 중심 x | 끊는 간격 | 문제 수 |")
+    A("|---|---|---|---|")
     cnt = Counter(p["file"] for p in problems)
     for f, band in st["bands"].items():
-        A(f"| {str(f)[:36]} | {band[0] if band else '-'} | {cnt.get(f,0)} |")
+        A(f"| {str(f)[:36]} | {band[0] if band else '-'} | "
+          f"{st.get('gap_thr', {}).get(f, '-')} | {cnt.get(f,0)} |")
     A("")
 
     A("## 6. 위치를 벗어나 제외한 후보")
