@@ -19,6 +19,7 @@ v4 에서 고친 것:
   - 예제·유제의 풀이를 본문에 끌고 오던 것을 바로잡았다.
     '풀이 / 답 / 정답 / 증명 / 해설' 이 나오면 거기서 끊는다.
   - '탐구 (1)' 처럼 괄호가 붙은 것은 탐구 활동의 소문항이므로 문제로 세지 않는다.
+  - 번호를 억지로 키우던 보정을 없씔다. 소단원이 바뀌면 번호는 1로 돌아간다.
 """
 
 import argparse
@@ -149,22 +150,23 @@ def match_start(ln):
 
 def fix_number(raw, prev):
     """
-    OCR 이 번호와 본문을 붙여 읽은 것을 앞 번호 흐름으로 보정한다.
+    OCR 이 번호와 본문을 붙여 읽은 것만 떼어낸다.
       직전 8 + '9100' -> 9      직전 2 + '33' -> 3
-      직전 13 + '14'  -> 14     직전 9 + '10' -> 10
-      첫 문제 + '12'  -> 1
+      직전 13 + '14'  -> 14     첫 문제 + '12' -> 1
+
+    번호를 억지로 키우지 않는다. 교과서는 소단원이 바뀌면 번호가 1로 돌아가므로
+    되돌아간 번호는 그대로 인정한다. (원본 번호와 쪽은 라벨로만 쓴다)
     """
     if raw is None:
         return None, False
     cands = [int(raw[:k]) for k in range(1, len(raw) + 1)]
     want = (prev + 1) if prev is not None else None
     if want is not None and want in cands:
-        pick = want
-    elif prev is not None:
-        bigger = [c for c in cands if c > prev]
-        pick = min(bigger) if bigger else cands[0]
+        pick = want          # 이어지는 번호
+    elif 1 in cands:
+        pick = 1             # 소단원이 바뀌어 1로 돌아간 경우
     else:
-        pick = cands[0]
+        pick = cands[0]      # 판단 근거가 없으면 맨 앞 자리
     return pick, (pick != cands[-1])
 
 
@@ -305,7 +307,7 @@ def build(rows, page_width):
         else:
             dropped_x.append(c)
 
-    # 5) 번호 보정
+    # 5) 번호 정리 (억지로 키우지 않는다)
     prev = {}
     for c in kept:
         key = (c["line"].get("_file"), c["name"])
@@ -375,27 +377,34 @@ def build(rows, page_width):
 
 
 def check_sequence(problems):
+    """번호 결손을 알린다.
+
+    소단원이 바뀌면 번호가 1로 돌아가는 것은 정상이므로,
+    번호가 1로 되돌아간 지점은 새 묶음의 시작으로 본다.
+    """
     warns = []
     groups = defaultdict(list)
     for p in problems:
         if p["num"] is not None:
             groups[(p["file"], p["name"])].append(p["num"])
+
+    def flush(fname, name, run):
+        if len(run) < 2:
+            return
+        gaps = sorted(set(range(run[0], run[-1] + 1)) - set(run))
+        if gaps:
+            warns.append(
+                f"[{str(fname)[:24]}] {name} {run[0]}~{run[-1]} 결손 {gaps[:12]}")
+
     for (fname, name), nums in groups.items():
         run = []
         for v in nums:
             if run and v <= run[-1]:
-                gaps = sorted(set(range(run[0], run[-1] + 1)) - set(run))
-                if gaps:
-                    warns.append(
-                        f"[{str(fname)[:24]}] {name} {run[0]}~{run[-1]} 결손 {gaps[:12]}")
+                flush(fname, name, run)
                 run = [v]
             else:
                 run.append(v)
-        if run:
-            gaps = sorted(set(range(run[0], run[-1] + 1)) - set(run))
-            if gaps:
-                warns.append(
-                    f"[{str(fname)[:24]}] {name} {run[0]}~{run[-1]} 결손 {gaps[:12]}")
+        flush(fname, name, run)
     return warns
 
 
