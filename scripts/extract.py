@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-extract.py  v3
+extract.py  v4
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
     python3 scripts/extract.py ./stage0_out ./EXTRACT.md
 
 v2 에서 고친 것:
-  - 예제/유제는 풀이가 서술문으로 이어지므로 서술문에서 끊지 않는다
   - 발문이 그림을 가리키는데 본문에 그림이 없으면 같은 높이대의 그림을 추정해 붙인다
   - 그래도 못 찾으면 '그림 없음' 으로 따로 경고한다
 
@@ -15,6 +14,11 @@ v3 에서 고친 것:
   - 윗줄에 딸린 줄(parent_id 있음)을 무조건 시작 후보에서 빼던 것을 바로잡았다.
     Mathpix 가 쪽 전체를 한 덩어리(column)로 묶으면 진짜 발문까지 그 덩어리의
     자식이 되어 통째로 사라졌다. 이제 부모가 묶음 상자면 통과시킨다.
+
+v4 에서 고친 것:
+  - 예제·유제의 풀이를 본문에 끌고 오던 것을 바로잡았다.
+    '풀이 / 답 / 정답 / 증명 / 해설' 이 나오면 거기서 끊는다.
+  - '탐구 (1)' 처럼 괄호가 붙은 것은 탐구 활동의 소문항이므로 문제로 세지 않는다.
 """
 
 import argparse
@@ -29,7 +33,8 @@ START_PATTERNS = [
     ("문제", re.compile(r"^\s*문제\s*(\d{1,4})"),                 "문제"),
     ("예제", re.compile(r"^\s*(?:필수\s*)?예제\s*(\d{1,4})"),      "예제"),
     ("유제", re.compile(r"^\s*유제\s*(\d{1,4})"),                 "유제"),
-    ("탐구", re.compile(r"^\s*(?:탐구|밤구)\s*[\(（]?\s*(\d{1,3})"), "탐구"),
+    # '탐구 (1)' 은 탐구 활동의 소문항이지 독립 문제가 아니다. 괄호 없는 것만 인정.
+    ("탐구", re.compile(r"^\s*(?:탐구|밤구)\s*(\d{1,3})"),           "탐구"),
     ("유형", re.compile(r"^\s*유형\s*(\d{1,3})"),                 "유형"),
     ("확인", re.compile(r"^\s*확인\s*문제\s*(\d{1,3})"),           "문제"),
     ("두자리", re.compile(r"^\s*(0\d)(?!\d)"),                    "번호"),
@@ -203,9 +208,9 @@ def find_end(live, start, hard_end, kind):
         if SUB_ITEM.match(t):
             i += 1
             continue
+        # 예제·유제는 발문 바로 뒤에 풀이가 붙는다. 풀이부터는 문제가 아니다.
         if kind in ("예제", "유제") and SOLUTION.match(t):
-            i += 1
-            continue
+            return i, "풀이시작"
 
         if not seen_order:
             i += 1
@@ -398,7 +403,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     W = []
     A = W.append
 
-    A("# 문제 추출 결과 v3")
+    A("# 문제 추출 결과 v4")
     A("")
     A(f"- 전체 줄 {len(rows):,} -> 유효 줄 {len(live):,}")
     A(f"- 시작 후보 {len(kept)+len(dropped_x)} -> 채택 {len(kept)} "
