@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-grade.py  v1
+grade.py  v2
 기준 파일(수기 편집본) 과 추출 결과를 자동 대조해 점수를 낸다.
 Mathpix 재호출 없음 = 비용 0원.
 
@@ -12,8 +12,9 @@ Mathpix 재호출 없음 = 비용 0원.
   1. 기준 파일을 parse_ref 로 읽어 문제 목록을 만든다
   2. stage0_out/runs/*/result.lines.json 을 extract 로 읽어 추출 문제를 만든다
   3. 두 목록을 읽는 순서를 지키며 정렬 대조(alignment)한다
-  4. 완전일치 / 잘림 / 넘침 / 부분일치 / 미검출 / 오검출 로 집계한다
-  5. 점수를 history.jsonl 에 쌓아 다음 실행 때 증감을 보여준다 (회귀 테스트)
+  4. 순서가 어긋나 빠진 짝은 따로 건져낸다 (rescue)
+  5. 완전일치 / 잘림 / 넘침 / 부분일치 / 미검출 / 오검출 로 집계한다
+  6. 점수를 history.jsonl 에 쌓아 다음 실행 때 증감을 보여준다 (회귀 테스트)
 
 왜 한글만 비교하는가
   기준 파일(한/글 -> PDF) 은 텍스트를 뽑으면 수식과 숫자가 통째로 사라진다.
@@ -41,6 +42,7 @@ MIN_SIM = 0.35        # 이 아래는 같은 문제로 보지 않는다
 OK = 0.85             # 완전일치로 인정할 겹침 비율
 MIN_CHARS = 6         # 한글 뼈대가 이보다 짧으면 판정 보류
 GAP_MAX = 15          # 매칭된 두 문제 사이가 이보다 벌어지면 '범위 밖'
+RESCUE_SIM = 0.55     # 순서가 어긋나도 이만큼 닮았으면 같은 문제로 인정
 
 IMG_MD = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 INC_GRAPHICS = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}")
@@ -234,10 +236,57 @@ def out_of_scope_ranges(scope, total_ref):
 
 # ------------------------------------------------------------------ 채점
 
-def judge(refs, exts, keep_math, min_sim, ok, gap_max):
+def rescue(pairs, rg, eg, n_ref, n_ext, rescue_sim):
+    """순서 정렬에서 빠진 짝을 건져낸다.
+
+    교과서와 편집본은 문제 순서가 어긋나는 구간이 있다(예제를 뒤로 몰아 편집 등).
+    순서를 지키는 정렬만으로는 이런 짝을 못 만든다.
+    그래서 남은 것끼리만, 충분히 닮은 경우에 한해 순서를 무시하고 짝지어 준다.
+    """
+    used_r = {p[0] for p in pairs}
+    used_e = {p[1] for p in pairs}
+    left_r = [i for i in range(n_ref) if i not in used_r]
+    left_e = [j for j in range(n_ext) if j not in used_e]
+    if not left_r or not left_e:
+        return pairs, 0
+
+    cand = []
+    for i in left_r:
+        gi = rg[i]
+        if not gi:
+            continue
+        for j in left_e:
+            gj = eg[j]
+            if not gj:
+                continue
+            inter = len(gi & gj)
+            if not inter:
+                continue
+            s = inter / (len(gi) + len(gj) - inter)
+            if s >= rescue_sim:
+                cand.append((s, i, j))
+
+    cand.sort(reverse=True)
+    added = 0
+    for s, i, j in cand:
+        if i in used_r or j in used_e:
+            continue
+        used_r.add(i)
+        used_e.add(j)
+        pairs.append((i, j, s))
+        added += 1
+
+    pairs.sort(key=lambda t: t[0])
+    return pairs, added
+
+
+def judge(refs, exts, keep_math, min_sim, ok, gap_max, rescue_sim=RESCUE_SIM):
     rn = [normalize(r["text"], keep_math) for r in refs]
     en = [normalize(e["text"], keep_math) for e in exts]
-    pairs = align([grams(s) for s in rn], [grams(s) for s in en], min_sim)
+    rg = [grams(s) for s in rn]
+    eg = [grams(s) for s in en]
+    pairs = align(rg, eg, min_sim)
+    pairs, rescued = rescue(pairs, rg, eg, len(refs), len(exts), rescue_sim)
 
     scope = in_scope([p[0] for p in pairs], len(refs), gap_max)
 
@@ -282,7 +331,7 @@ def judge(refs, exts, keep_math, min_sim, ok, gap_max):
         "ext_head": exts[j]["text"][:110],
     } for j in range(len(exts)) if j not in matched_ext]
 
-    return results, missed, false, scope
+    return results, missed, false, scope, rescued
 
 
 def score_of(results, missed, false, scope, refs, exts):
@@ -349,7 +398,7 @@ def delta_str(now, before, key, lower_is_better):
 # ------------------------------------------------------------------ 리포트
 
 def report(out_md, tag, refd, run_names, score, before, results, missed,
-           false, scope, refs, exts, st, args):
+           false, scope, refs, exts, st, args, rescued=0):
     W = []
     A = W.append
 
@@ -359,6 +408,7 @@ def report(out_md, tag, refd, run_names, score, before, results, missed,
     A(f"- 추출 대상 run 폴더 {len(run_names)}개 : {', '.join(run_names)}")
     A(f"- 비교 방식 : {'수식 포함' if args.keep_math else '한글 뼈대만'} "
       f"/ 최소유사도 {args.min_sim} / 일치기준 {args.ok}")
+    A(f"- 순서가 어긋나 따로 건져낸 짝 {rescued}개 (기준 유사도 {args.rescue})")
     A("")
 
     A("## 1. 점수")
@@ -497,6 +547,8 @@ def main():
     ap.add_argument("--min-sim", type=float, default=MIN_SIM)
     ap.add_argument("--ok", type=float, default=OK)
     ap.add_argument("--gap-max", type=int, default=GAP_MAX)
+    ap.add_argument("--rescue", type=float, default=RESCUE_SIM,
+                    help="순서가 어긋난 짝을 건져낼 최소 유사도")
     ap.add_argument("--list", action="store_true", help="run 폴더 이름만 출력")
     args = ap.parse_args()
 
@@ -524,8 +576,9 @@ def main():
 
     exts, run_names, st, n_rows = load_extracted(args.stage, args.file)
 
-    results, missed, false, scope = judge(
-        refs, exts, args.keep_math, args.min_sim, args.ok, args.gap_max)
+    results, missed, false, scope, rescued = judge(
+        refs, exts, args.keep_math, args.min_sim, args.ok, args.gap_max,
+        args.rescue)
     score = score_of(results, missed, false, scope, refs, exts)
 
     hist = os.path.join(args.outdir, "history.jsonl")
@@ -533,7 +586,7 @@ def main():
 
     out_md = os.path.join(args.outdir, f"GRADE_{tag}.md")
     report(out_md, tag, refd, run_names, score, before, results, missed,
-           false, scope, refs, exts, st, args)
+           false, scope, refs, exts, st, args, rescued)
 
     detail = os.path.join(args.outdir, f"{tag}.detail.json")
     with open(detail, "w", encoding="utf-8") as f:
@@ -548,13 +601,14 @@ def main():
         "ref": os.path.basename(args.ref),
         "runs": run_names,
         "params": {"min_sim": args.min_sim, "ok": args.ok,
-                   "gap_max": args.gap_max, "keep_math": args.keep_math},
+                   "gap_max": args.gap_max, "keep_math": args.keep_math,
+                   "rescue": args.rescue},
         "score": score,
     })
 
     print(f"완료: {out_md}")
     print(f"기준 {score['기준_전체']}개 (채점 범위 {score['기준_범위내']}) / "
-          f"추출 {score['추출_전체']}개")
+          f"추출 {score['추출_전체']}개 / 건져낸 짝 {rescued}개")
     print(f"완전일치 {score['완전일치']} / 잘림 {score['잘림']} / "
           f"넘침 {score['넘침']} / 부분일치 {score['부분일치']} / "
           f"보류 {score['판정보류']}")
