@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # pull.sh - 최신 코드를 받아오고 환경을 맞춘다.
 # 사용법:  bash pull.sh
+#
+# 자기 자신이 갱신되면 새 버전으로 한 번 다시 실행한다.
+# (파일 목록이 바뀌었을 때 두 번 돌려야 하는 문제를 없애기 위함)
 set -u
 
 REPO_RAW="https://raw.githubusercontent.com/Harin-Yang/math-workbook-api/main"
@@ -16,14 +19,34 @@ FILES=(
 mkdir -p "$WORKDIR/scripts"
 cd "$WORKDIR" || exit 1
 
+# ---- 1) 자기 자신 먼저 갱신 ----
+SELF_RELOADED="${PULL_SH_RELOADED:-0}"
+if [ "$SELF_RELOADED" = "0" ]; then
+  OLD_SUM=""
+  [ -f pull.sh ] && OLD_SUM=$(md5sum pull.sh | cut -d' ' -f1)
+  if curl -fsSL "$REPO_RAW/pull.sh?$(date +%s)" -o pull.sh.tmp 2>/dev/null; then
+    NEW_SUM=$(md5sum pull.sh.tmp | cut -d' ' -f1)
+    mv pull.sh.tmp pull.sh
+    if [ "$OLD_SUM" != "$NEW_SUM" ]; then
+      echo "== pull.sh 갱신됨. 새 버전으로 재실행 =="
+      echo
+      PULL_SH_RELOADED=1 exec bash pull.sh
+    fi
+  else
+    rm -f pull.sh.tmp
+  fi
+fi
+
+# ---- 2) 나머지 파일 ----
 echo "== 코드 동기화 =="
 for f in "${FILES[@]}"; do
+  [ "$f" = "pull.sh" ] && continue
   if curl -fsSL "$REPO_RAW/$f?$(date +%s)" -o "$f.tmp" 2>/dev/null; then
     mv "$f.tmp" "$f"
     echo "  OK   $f"
   else
     rm -f "$f.tmp"
-    echo "  SKIP $f (없음)"
+    echo "  SKIP $f (저장소에 없음)"
   fi
 done
 chmod +x scripts/*.sh 2>/dev/null
