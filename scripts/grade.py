@@ -8,12 +8,6 @@ Mathpix 재호출 없음 = 비용 0원.
     python3 scripts/grade.py --list
     python3 scripts/grade.py --ref <기준.pdf> --file <run폴더필터> --tag 기하
 
-    python3 scripts/grade.py \\
-        --ref samples/기준/[기하][신사고][문제편집].pdf \\
-        --stage ./stage0_out \\
-        --file 이차곡선 --file 벡터 --file 공간도형 \\
-        --tag 기하 --outdir ./grade_out
-
 무엇을 하는가
   1. 기준 파일을 parse_ref 로 읽어 문제 목록을 만든다
   2. stage0_out/runs/*/result.lines.json 을 extract 로 읽어 추출 문제를 만든다
@@ -148,8 +142,14 @@ def load_extracted(stage_dir, filters):
     return out, names, st, len(all_rows)
 
 
-def load_reference(ref_pdf, ref_json):
-    if ref_json and os.path.exists(ref_json):
+def load_reference(ref_pdf, ref_json, reuse):
+    """기준 파일을 읽는다.
+
+    기본은 매번 PDF 를 다시 읽는다. 파서를 고쳤는데 옛 결과가 재활용되면
+    점수가 안 바뀌어 원인을 찾기 어렵기 때문이다.
+    --ref-json 으로 경로를 직접 준 경우에만 있는 파일을 재활용한다.
+    """
+    if reuse and ref_json and os.path.exists(ref_json):
         with open(ref_json, encoding="utf-8") as f:
             return json.load(f)
     d = PR.parse(ref_pdf)
@@ -485,7 +485,8 @@ def report(out_md, tag, refd, run_names, score, before, results, missed,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default=None, help="기준 파일 PDF")
-    ap.add_argument("--ref-json", default=None, help="기준 파싱 결과 저장/재사용 경로")
+    ap.add_argument("--ref-json", default=None,
+                    help="기준 파싱 결과를 이 경로에서 재사용한다 (기본은 매번 새로 읽음)")
     ap.add_argument("--stage", default="./stage0_out")
     ap.add_argument("--file", action="append", default=[],
                     help="run 폴더 이름에 포함될 조각. 여러 번 줄 수 있다")
@@ -513,9 +514,10 @@ def main():
 
     tag = args.tag or os.path.splitext(os.path.basename(args.ref))[0]
     os.makedirs(args.outdir, exist_ok=True)
+    reuse = bool(args.ref_json)
     ref_json = args.ref_json or os.path.join(args.outdir, f"{tag}.ref.json")
 
-    refd = load_reference(args.ref, ref_json)
+    refd = load_reference(args.ref, ref_json, reuse)
     refs = refd["problems"]
     if not refs:
         sys.exit("기준 파일에서 문제를 찾지 못했습니다.")
