@@ -2,11 +2,13 @@
 # pull.sh - 최신 코드를 받아오고 환경을 맞춘다.
 # 사용법:  bash pull.sh
 #
-# 자기 자신이 갱신되면 새 버전으로 한 번 다시 실행한다.
-# (파일 목록이 바뀌었을 때 두 번 돌려야 하는 문제를 없애기 위함)
+# raw.githubusercontent.com 은 CDN 캐시 때문에 최대 5분간 옛 파일을 준다.
+# 그래서 최신 커밋 해시를 먼저 알아낸 뒤, 해시가 박힌 주소로 받는다.
+# 해시 주소는 절대 캐시되지 않으므로 항상 최신본이 온다.
 set -u
 
-REPO_RAW="https://raw.githubusercontent.com/Harin-Yang/math-workbook-api/main"
+OWNER="Harin-Yang"
+REPO="math-workbook-api"
 WORKDIR="$HOME/mathocr"
 FILES=(
   "pull.sh"
@@ -19,33 +21,46 @@ FILES=(
 mkdir -p "$WORKDIR/scripts"
 cd "$WORKDIR" || exit 1
 
-# ---- 1) 자기 자신 먼저 갱신 ----
-SELF_RELOADED="${PULL_SH_RELOADED:-0}"
-if [ "$SELF_RELOADED" = "0" ]; then
-  OLD_SUM=""
-  [ -f pull.sh ] && OLD_SUM=$(md5sum pull.sh | cut -d' ' -f1)
-  if curl -fsSL "$REPO_RAW/pull.sh?$(date +%s)" -o pull.sh.tmp 2>/dev/null; then
-    NEW_SUM=$(md5sum pull.sh.tmp | cut -d' ' -f1)
-    mv pull.sh.tmp pull.sh
-    if [ "$OLD_SUM" != "$NEW_SUM" ]; then
-      echo "== pull.sh 갱신됨. 새 버전으로 재실행 =="
+# ---- 최신 커밋 해시 ----
+SHA=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/commits/main" \
+      | grep -m1 '"sha"' | cut -d'"' -f4)
+
+if [ -n "${SHA:-}" ]; then
+  BASE="https://raw.githubusercontent.com/$OWNER/$REPO/$SHA"
+  echo "== 커밋 ${SHA:0:8} =="
+else
+  BASE="https://raw.githubusercontent.com/$OWNER/$REPO/main"
+  echo "== 커밋 확인 실패, main 기준 (캐시된 파일일 수 있음) =="
+fi
+echo
+
+fetch() {  # fetch <경로>  -> 성공 0
+  curl -fsSL "$BASE/$1" -o "$1.tmp" 2>/dev/null || return 1
+  [ -s "$1.tmp" ] || { rm -f "$1.tmp"; return 1; }
+  mv "$1.tmp" "$1"
+}
+
+# ---- 1) 자기 자신 먼저 ----
+if [ "${PULL_SH_RELOADED:-0}" = "0" ]; then
+  OLD=""
+  [ -f pull.sh ] && OLD=$(md5sum pull.sh | cut -d' ' -f1)
+  if fetch "pull.sh"; then
+    NEW=$(md5sum pull.sh | cut -d' ' -f1)
+    if [ "$OLD" != "$NEW" ]; then
+      echo "pull.sh 갱신됨. 새 버전으로 재실행"
       echo
       PULL_SH_RELOADED=1 exec bash pull.sh
     fi
-  else
-    rm -f pull.sh.tmp
   fi
 fi
 
-# ---- 2) 나머지 파일 ----
+# ---- 2) 나머지 ----
 echo "== 코드 동기화 =="
 for f in "${FILES[@]}"; do
   [ "$f" = "pull.sh" ] && continue
-  if curl -fsSL "$REPO_RAW/$f?$(date +%s)" -o "$f.tmp" 2>/dev/null; then
-    mv "$f.tmp" "$f"
-    echo "  OK   $f"
+  if fetch "$f"; then
+    echo "  OK   $f  ($(wc -l < "$f")줄)"
   else
-    rm -f "$f.tmp"
     echo "  SKIP $f (저장소에 없음)"
   fi
 done
