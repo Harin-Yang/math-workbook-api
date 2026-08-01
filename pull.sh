@@ -3,68 +3,55 @@
 # 사용법:  bash pull.sh
 #
 # raw.githubusercontent.com 은 CDN 캐시 때문에 최대 5분간 옛 파일을 준다.
-# 그래서 최신 커밋 해시를 먼저 알아낸 뒤, 해시가 박힌 주소로 받는다.
-# 해시 주소는 절대 캐시되지 않으므로 항상 최신본이 온다.
+# codeload 의 tar.gz 는 캐시되지 않으므로 항상 최신본이 온다. 요청도 1번뿐.
 set -u
 
 OWNER="Harin-Yang"
 REPO="math-workbook-api"
 WORKDIR="$HOME/mathocr"
-FILES=(
-  "pull.sh"
-  "scripts/stage0.py"
-  "scripts/analyze.py"
-  "scripts/run.sh"
-  "scripts/run_analyze.sh"
-)
+TARBALL="https://codeload.github.com/$OWNER/$REPO/tar.gz/refs/heads/main"
 
 mkdir -p "$WORKDIR/scripts"
 cd "$WORKDIR" || exit 1
 
-# ---- 최신 커밋 해시 ----
-SHA=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/commits/main" \
-      | grep -m1 '"sha"' | cut -d'"' -f4)
+echo "== 코드 동기화 =="
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 
-if [ -n "${SHA:-}" ]; then
-  BASE="https://raw.githubusercontent.com/$OWNER/$REPO/$SHA"
-  echo "== 커밋 ${SHA:0:8} =="
-else
-  BASE="https://raw.githubusercontent.com/$OWNER/$REPO/main"
-  echo "== 커밋 확인 실패, main 기준 (캐시된 파일일 수 있음) =="
+if ! curl -fsSL "$TARBALL" -o "$TMP/repo.tgz"; then
+  echo "  실패: 저장소를 받지 못했습니다. 네트워크를 확인하세요."
+  exit 1
 fi
-echo
 
-fetch() {  # fetch <경로>  -> 성공 0
-  curl -fsSL "$BASE/$1" -o "$1.tmp" 2>/dev/null || return 1
-  [ -s "$1.tmp" ] || { rm -f "$1.tmp"; return 1; }
-  mv "$1.tmp" "$1"
+tar xzf "$TMP/repo.tgz" -C "$TMP" --strip-components=1 || {
+  echo "  실패: 압축 해제 오류"
+  exit 1
 }
 
-# ---- 1) 자기 자신 먼저 ----
-if [ "${PULL_SH_RELOADED:-0}" = "0" ]; then
-  OLD=""
-  [ -f pull.sh ] && OLD=$(md5sum pull.sh | cut -d' ' -f1)
-  if fetch "pull.sh"; then
-    NEW=$(md5sum pull.sh | cut -d' ' -f1)
-    if [ "$OLD" != "$NEW" ]; then
-      echo "pull.sh 갱신됨. 새 버전으로 재실행"
-      echo
-      PULL_SH_RELOADED=1 exec bash pull.sh
-    fi
-  fi
-fi
+OLD_PULL=""
+[ -f pull.sh ] && OLD_PULL=$(md5sum pull.sh | cut -d' ' -f1)
 
-# ---- 2) 나머지 ----
-echo "== 코드 동기화 =="
-for f in "${FILES[@]}"; do
-  [ "$f" = "pull.sh" ] && continue
-  if fetch "$f"; then
+for f in pull.sh scripts/stage0.py scripts/analyze.py \
+         scripts/run.sh scripts/run_analyze.sh; do
+  if [ -f "$TMP/$f" ]; then
+    cp "$TMP/$f" "$f"
     echo "  OK   $f  ($(wc -l < "$f")줄)"
   else
     echo "  SKIP $f (저장소에 없음)"
   fi
 done
 chmod +x scripts/*.sh 2>/dev/null
+
+# pull.sh 자체가 바뀌었으면 새 버전으로 한 번 다시 실행
+if [ "${PULL_SH_RELOADED:-0}" = "0" ]; then
+  NEW_PULL=$(md5sum pull.sh | cut -d' ' -f1)
+  if [ "$OLD_PULL" != "$NEW_PULL" ]; then
+    echo
+    echo "pull.sh 갱신됨. 새 버전으로 재실행"
+    echo
+    PULL_SH_RELOADED=1 exec bash pull.sh
+  fi
+fi
 
 echo
 echo "== 파이썬 환경 =="
