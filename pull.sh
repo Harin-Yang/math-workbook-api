@@ -31,8 +31,8 @@ tar xzf "$TMP/repo.tgz" -C "$TMP" --strip-components=1 || {
 OLD_PULL=""
 [ -f pull.sh ] && OLD_PULL=$(md5sum pull.sh | cut -d' ' -f1)
 
-for f in pull.sh scripts/stage0.py scripts/analyze.py \
-         scripts/run.sh scripts/run_analyze.sh; do
+for f in pull.sh scripts/stage0.py scripts/analyze.py scripts/extract.py \
+         scripts/run.sh scripts/run_analyze.sh scripts/run_extract.sh; do
   if [ -f "$TMP/$f" ]; then
     cp "$TMP/$f" "$f"
     echo "  OK   $f  ($(wc -l < "$f")줄)"
@@ -42,7 +42,7 @@ for f in pull.sh scripts/stage0.py scripts/analyze.py \
 done
 chmod +x scripts/*.sh 2>/dev/null
 
-# pull.sh 자체가 바뀌었으면 새 버전으로 한 번 다시 실행
+# pull.sh 자체가 바뀜으면 새 버전으로 한 번 다시 실행
 if [ "${PULL_SH_RELOADED:-0}" = "0" ]; then
   NEW_PULL=$(md5sum pull.sh | cut -d' ' -f1)
   if [ "$OLD_PULL" != "$NEW_PULL" ]; then
@@ -88,5 +88,6 @@ fi
 
 echo
 echo "동기화 완료. 명령:"
-echo "  bash scripts/run.sh          # Mathpix 측정 (과금)"
-echo "  bash scripts/run_analyze.sh  # 기존 결과 재분석 (무료)"
+echo "  bash scripts/run_extract.sh   # 문제 추출 (무료)"
+echo "  bash scripts/run_analyze.sh   # 구조 분석 (무료)"
+echo "  bash scripts/run.sh           # Mathpix 측정 (과금)"
