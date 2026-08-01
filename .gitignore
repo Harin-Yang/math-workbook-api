@@ -1,0 +1,21 @@
+# 비밀정보
+.env
+
+# 파이썬
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# 작업 산출물
+samples/
+pdfs/
+stage0_out/
+bench*/
+textlayer_check*/
+*.log
+triage_report.csv
+
+# 원본 자료 (저작권)
+*.pdf
+*.docx
