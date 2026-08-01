@@ -8,8 +8,6 @@ WORKDIR="$HOME/mathocr"
 FILES=(
   "pull.sh"
   "scripts/stage0.py"
-  "scripts/dump_textlayer.py"
-  "scripts/triage_samples.py"
   "scripts/run.sh"
 )
 
@@ -18,7 +16,7 @@ cd "$WORKDIR" || exit 1
 
 echo "== 코드 동기화 =="
 for f in "${FILES[@]}"; do
-  if curl -fsSL "$REPO_RAW/$f?$(date +%s)" -o "$f.tmp"; then
+  if curl -fsSL "$REPO_RAW/$f?$(date +%s)" -o "$f.tmp" 2>/dev/null; then
     mv "$f.tmp" "$f"
     echo "  OK   $f"
   else
@@ -56,12 +54,9 @@ fi
 if [ -n "${MATHPIX_APP_KEY:-}" ]; then
   echo "  설정됨"
 else
-  echo "  없음. 아래를 실행하세요 (한 번만):"
-  echo
-  echo "    cat > ~/mathocr/.env << 'EOF'"
-  echo "    MATHPIX_APP_ID=발급받은_id"
-  echo "    MATHPIX_APP_KEY=발급받은_key"
-  echo "    EOF"
+  echo "  없음. ~/mathocr/.env 파일에 아래 두 줄을 넣으세요:"
+  echo "    MATHPIX_APP_ID=..."
+  echo "    MATHPIX_APP_KEY=..."
 fi
 
 echo
