@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-parse_ref.py  v2
+parse_ref.py  v3
 테스트 기준 파일(수기 편집본 PDF)에서 문제 단위를 뽑아낸다.
 이 결과가 추출 정확도의 채점 기준이 된다.
 
@@ -9,6 +9,7 @@ parse_ref.py  v2
 
 편집본의 공통 신호:
   - 문제 시작은 'N.N)' (표시번호.각주번호) 형태. 두 번호가 항상 같다.
+    PDF 추출기에 따라 앞 표시번호가 사라져 'N)' 만 남기도 한다.
   - 소단원은 'N-N-N. 제목'. 출판사에 따라 번호가 제목 앞/뒤에 온다.
   - 해설은 '[정답 및 해설]' 또는 '[빠른 정답]' 이후 전부
   - 머리말/꼬리말/워터마크는 여러 쪽에 반복되는 줄로 자동 식별
@@ -18,8 +19,10 @@ v1 에서 고친 것:
      ('Du kannst ... | 1 | 용문아 수학방' -> 숫자를 가린 뒤 반복 빈도로 판정)
   2. 꼬리말 '- 12 -' 형태를 걷어낸다. (v1 은 '| 12 |' 만 걷어냈다)
   3. '[정답 및 해설]' 표기가 없는 편집본의 해설 시작을 쪽 단위로 찾는다.
-     (해설 쪽은 'N.N)' 이 없고 'N)' 만 여러 개 나온다)
+     (해설은 번호가 다시 1부터 시작한다)
   4. 소단원 번호 'N-N-N.' 이 아예 없는 편집본은 쪽 머리의 제목 줄로 추정한다.
+  5. 앞 표시번호가 떨어져 나가 'N)' 만 남는 추출기에도 대응한다.
+     번호가 1씩 커지는 가장 긴 사슬만 문제로 인정해 오탐을 막는다.
 """
 
 import argparse
@@ -39,11 +42,9 @@ warnings.filterwarnings("ignore")
 from pypdf import PdfReader
 
 # 문제 시작. 앞 번호는 표시 번호, 뒤 번호는 해설 연결용 각주.
-# '순열13.13)' 처럼 한글 바로 뒤에 붙어 나오는 경우가 있어 앞 조건을 느슨히 둔다.
-# 대신 '두 번호가 같을 것' + '번호가 커질 것' 두 조건으로 오탐을 막는다.
-Q_START = re.compile(r"(?<![\d.])(\d{1,3})\.\s?(\d{1,3})\)")
-# 해설 본문의 문제 번호. 'N.' 없이 'N)' 만 나온다.
-BARE_NUM = re.compile(r"(?<![\d.])(\d{1,3})\)")
+# 추출기에 따라 앞 표시번호가 통째로 떨어져 나간다. 그래서 앞 번호는 선택으로 둔다.
+#   '107.107)' 과 '107)' 을 모두 잡는다.
+Q_ANY = re.compile(r"(?<![\d.])(?:(\d{1,3})\.\s?)?(\d{1,3})\)")
 # 소단원 제목. 두 형태를 모두 본다.
 #   '1-1-1. 여러 가지 순열'  (번호가 앞)
 #   '여러 가지 순열1-1-1.'    (번호가 뒤 - 교학사 편집)
@@ -113,20 +114,59 @@ def strip_boiler(pages_raw, boiler):
 
 
 def find_solution_page(pages):
-    """해설이 시작되는 쪽 번호(0부터)와 판정 근거를 돌려준다."""
+    """해설이 시작되는 쪽 번호(0부터)와 판정 근거를 돌려준다.
+
+    표기가 없으면 번호가 다시 1부터 시작하는 지점을 해설 시작으로 본다.
+    """
     for i, lines in enumerate(pages):
         for s in lines:
             if SOLUTION_HEAD.search(s):
                 return i, "표기"
 
-    has_q = [any(Q_START.search(s) for s in lines) for lines in pages]
-    for i in range(len(pages)):
-        if has_q[i] or any(has_q[i + 1:]):
+    max_seen = 0
+    for i, lines in enumerate(pages):
+        nums = [int(m.group(2)) for s in lines for m in Q_ANY.finditer(s)]
+        if not nums:
             continue
-        cnt = sum(len(BARE_NUM.findall(s)) for s in pages[i])
-        if cnt >= 2:
-            return i, "추정"
+        # 본문 안에 '4)' 같은 게 하나 섞여 있을 수 있으니
+        # 작은 번호가 여러 개 몰려 나올 때만 해설 시작으로 본다
+        if max_seen >= 20 and min(nums) <= 3 \
+                and sum(1 for v in nums if v <= 10) >= 2:
+            return i, "번호재시작"
+        max_seen = max(max_seen, max(nums))
     return None, None
+
+
+def pick_chain(matches, max_gap=3):
+    """번호가 1씩 커지는 가장 긴 사슬만 문제 시작으로 인정한다.
+
+    같은 번호가 본문에 여러 번 나와도 사슬에 맞는 하나만 살아남는다.
+    앞 번호와 뒤 번호가 같으면(107.107) 가산점을 줘 그쪽을 먼저 고른다.
+    """
+    best = {}
+    dp = []
+    for i, (_mm, a, b) in enumerate(matches):
+        bp = None
+        for d in range(1, max_gap + 1):
+            c = best.get(b - d)
+            if c and (bp is None or c[0] > bp[0]):
+                bp = c
+        score = (bp[0] if bp else 0) + 1 + (0.5 if a is not None and a == b else 0)
+        dp.append((score, bp[1] if bp else None))
+        cur = best.get(b)
+        if cur is None or score > cur[0]:
+            best[b] = (score, i)
+
+    if not dp:
+        return []
+    end = max(range(len(dp)), key=lambda i: dp[i][0])
+    chain = []
+    i = end
+    while i is not None:
+        chain.append(i)
+        i = dp[i][1]
+    chain.reverse()
+    return [matches[i] for i in chain]
 
 
 def is_title(s):
@@ -208,18 +248,17 @@ def parse(path):
     sec_style = "번호" if len(SECTION_ANY.findall(stream)) >= 3 else "제목추정"
     page_sections = learn_page_sections(body_pages) if sec_style == "제목추정" else {}
 
-    # 두 번호가 같고, 번호가 앞 문제보다 큰 것만 문제 시작으로 인정한다
-    starts, prev = [], 0
-    for mm in Q_START.finditer(stream):
-        a, b = int(mm.group(1)), int(mm.group(2))
-        if a != b or a <= prev:
-            continue
-        starts.append(mm)
-        prev = a
+    # 번호가 1씩 커지는 가장 긴 사슬만 문제 시작으로 인정한다
+    cands = []
+    for mm in Q_ANY.finditer(stream):
+        a = mm.group(1)
+        cands.append((mm, int(a) if a else None, int(mm.group(2))))
+    starts = pick_chain(cands)
+    both = sum(1 for _m, a, b in starts if a is not None and a == b)
 
     problems = []
-    for i, mm in enumerate(starts):
-        end = starts[i + 1].start() if i + 1 < len(starts) else len(stream)
+    for i, (mm, _a, _b) in enumerate(starts):
+        end = starts[i + 1][0].start() if i + 1 < len(starts) else len(stream)
         raw = stream[mm.end():end]
         page = page_of(mm.start(), page_at)
 
@@ -251,7 +290,8 @@ def parse(path):
             text = re.sub(rf"\s*\[?{re.escape(lb)}\]?\s*$", "", text)
 
         problems.append({
-            "num": int(mm.group(1)),
+            "num": int(mm.group(2)),
+            "display": int(mm.group(1)) if mm.group(1) else None,
             "footnote": int(mm.group(2)),
             "section": section,
             "block": block,
@@ -269,6 +309,7 @@ def parse(path):
         "solution_page": (sol_i + 1) if sol_i is not None else None,
         "solution_detect": sol_how,
         "section_style": sec_style,
+        "num_style": f"앞번호 있음 {both} / 없음 {len(starts) - both}",
         "problems": problems,
         "solution_chars": len(solution),
     }
@@ -321,8 +362,7 @@ def report(d, out_md):
     A("")
     A(f"- 범위 {min(nums) if nums else '-'} ~ {max(nums) if nums else '-'}")
     A(f"- 결손 {gaps[:20] if gaps else '없음'}")
-    A(f"- 표시번호 != 각주번호 : "
-      f"{sum(1 for p in ps if p['num'] != p['footnote'])}건")
+    A(f"- 번호 표기: {d['num_style']}")
     A("")
 
     lens = sorted(p["chars"] for p in ps)
