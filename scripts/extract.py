@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-extract.py  v2
+extract.py  v3
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
     python3 scripts/extract.py ./stage0_out ./EXTRACT.md
 
-v1 에서 고친 것:
-  1. 파일 경계를 넘어 다음 교재까지 빨아들이던 버그 (782줄/917줄 문제)
-  2. x 위치 학습을 전체 통합 -> 파일별로 (편집이 다른 교재가 통째로 제외되던 문제)
-  3. 번호 파싱: '문제 9100 이상' -> 9 로 보정 (OCR 이 번호와 본문을 붙여 읽음)
-  4. 문제의 '끝'을 능동 판정: 발문의 명령형 어미 + 소문항 그룹으로 경계 확정
+v2 에서 고친 것:
+  - 예제/유제는 풀이가 서술문으로 이어지므로 서술문에서 끊지 않는다
+  - 발문이 그림을 가리키는데 본문에 그림이 없으면 같은 높이대의 그림을 추정해 붙인다
+  - 그래도 못 찾으면 '그림 없음' 으로 따로 경고한다
 """
 
 import argparse
@@ -21,7 +20,6 @@ import sys
 from collections import Counter, defaultdict
 
 # ---- 문제 시작 표기 ----
-# 번호는 넉넉히 읽고 뒤에서 시퀀스로 보정한다.
 START_PATTERNS = [
     ("문제", re.compile(r"^\s*문제\s*(\d{1,4})"),                 "문제"),
     ("예제", re.compile(r"^\s*(?:필수\s*)?예제\s*(\d{1,4})"),      "예제"),
@@ -32,19 +30,21 @@ START_PATTERNS = [
     ("두자리", re.compile(r"^\s*(0\d)(?!\d)"),                    "번호"),
 ]
 
-# 발문 끝을 알리는 명령형 어미.
-# 어미 뒤에 '(단, a>0)' 같은 단서 괄호가 붙어도 발문의 끝으로 본다.
+# 발문 끝을 알리는 명령형 어미. 뒤에 '(단, a>0)' 이 붙어도 끝으로 본다.
 ORDER_END = re.compile(
     r"(?:시오|하라|보자|구해라|말해라)"
     r"\s*[.．,，]?\s*"
     r"(?:[(（][^)）]{0,60}[)）])?"
     r"\s*[.．]?\s*$")
 
-# 소문항 표기
 SUB_ITEM = re.compile(r"^\s*[(（\[]\s*\d{1,2}\s*[)）\]]|^\s*[①-⑳]|^\s*[⑴-⒇]")
 
 # 예제의 풀이/답
-SOLUTION = re.compile(r"^\s*(풀이|답|정답)\b|^\s*(풀이|답|정답)\s")
+SOLUTION = re.compile(r"^\s*(풀이|답|정답|증명|해설)")
+
+# 발문에서 그림을 가리키는 표현 (그림이 딸려야 하는 문제)
+FIGURE_REF = re.compile(r"(오른쪽|아래|위의|다음)\s*(그림|표|도형)|그림과\s*같이|"
+                        r"그림에서|그림은|정팔면체|정사면체|직육면체|정육면체")
 
 BODY_TYPES = {"text", "math", "list_item", "multiple_choice_block",
               "multiple_choice_option", "section_header", "equation_number",
@@ -54,14 +54,14 @@ BODY_TYPES = {"text", "math", "list_item", "multiple_choice_block",
 DROP_TYPES = {"page_info"}
 FIGURE_TYPES = {"diagram", "chart"}
 
-# 이어붙는 줄 (한 문장이 여러 줄로 쪼개진 것)
 CONTINUE_SUBTYPES = {"continues_line_space", "continues_line_no_space",
                      "continues_line_newline"}
 
 MAX_TITLE_FONT = 60
 FIGURE_MAX_WIDTH_RATIO = 0.75
-MAX_BODY_LINES = 60          # 이보다 길면 끝을 못 찾은 것으로 보고 자름
-MAX_PAGE_SPAN = 1            # 문제 하나가 걸칠 수 있는 페이지 넘김 횟수
+MAX_BODY_LINES = 60
+MAX_PAGE_SPAN = 1
+FIGURE_GUESS_RANGE = 400     # 발문 위아래 이 범위 안의 그림을 후보로 본다
 
 
 def collect_pages(obj, out=None, hint=None):
@@ -137,22 +137,13 @@ def match_start(ln):
 def fix_number(raw, prev):
     """
     OCR 이 번호와 본문을 붙여 읽은 것을 앞 번호 흐름으로 보정한다.
-
-    앞에서부터 한 자리씩 늘려 후보를 만들고,
-      1순위: 직전 번호 + 1 과 정확히 일치하는 후보
-      2순위: 직전 번호보다 큰 후보 중 가장 작은 것
-    을 택한다.
-
-      직전 8 + '9100' -> 9      (문제 9 / 100 이상 ...)
-      직전 2 + '33'   -> 3      (문제 3 / 3개의 ...)
-      직전 13 + '14'  -> 14     (정상)
-      직전 9 + '10'   -> 10     (정상)
-      첫 문제 + '12'  -> 1      (예제 1 / 2명의 ...)
+      직전 8 + '9100' -> 9      직전 2 + '33' -> 3
+      직전 13 + '14'  -> 14     직전 9 + '10' -> 10
+      첫 문제 + '12'  -> 1
     """
     if raw is None:
         return None, False
     cands = [int(raw[:k]) for k in range(1, len(raw) + 1)]
-
     want = (prev + 1) if prev is not None else None
     if want is not None and want in cands:
         pick = want
@@ -161,15 +152,11 @@ def fix_number(raw, prev):
         pick = min(bigger) if bigger else cands[0]
     else:
         pick = cands[0]
-
     return pick, (pick != cands[-1])
 
 
 def find_end(live, start, hard_end, kind):
-    """
-    문제의 끝 위치를 찾는다. start 는 발문 줄 인덱스.
-    반환: (끝 인덱스(미포함), 종료 사유)
-    """
+    """문제의 끝 위치를 찾는다. 반환: (끝 인덱스(미포함), 종료 사유)"""
     head = live[start]
     head_file = head.get("_file")
     seen_order = bool(ORDER_END.search(txt(head)))
@@ -183,11 +170,9 @@ def find_end(live, start, hard_end, kind):
         t = txt(ln)
         typ = ln.get("type")
 
-        # 파일이 바뀌면 무조건 종료
         if ln.get("_file") != head_file:
             return i, "파일경계"
 
-        # 페이지 넘김 한도
         pg = ln.get("_page")
         if isinstance(pg, int) and isinstance(prev_page, int) and pg != prev_page:
             page_span += 1
@@ -195,40 +180,37 @@ def find_end(live, start, hard_end, kind):
             if page_span > MAX_PAGE_SPAN:
                 return i, "페이지초과"
 
-        # 개념 설명 시작
         if typ == "section_header":
             return i, "단원제목"
 
-        # 길이 한도
         if i - start >= MAX_BODY_LINES:
             return i, "길이초과"
 
-        # 그림/수식/이어붙는 줄/빈 줄은 항상 포함
         if typ in FIGURE_TYPES or is_display_math(ln) or not t:
             i += 1
             continue
         if ln.get("subtype") in CONTINUE_SUBTYPES:
             i += 1
             continue
-
-        # 소문항은 항상 포함
         if SUB_ITEM.match(t):
             i += 1
             continue
-
-        # 예제/유제는 풀이·답까지 포함
         if kind in ("예제", "유제") and SOLUTION.match(t):
             i += 1
             continue
 
         if not seen_order:
-            # 아직 발문이 안 끝났다 -> 계속 읽는다
             i += 1
             if ORDER_END.search(t):
                 seen_order = True
             continue
 
-        # 발문이 끝났는데 소문항이 아닌 서술문 -> 여기서 종료
+        # 예제/유제는 풀이가 서술문으로 이어진다.
+        # 단원제목 / 다음 문제 / 페이지초과 / 길이한도에서만 끊는다.
+        if kind in ("예제", "유제"):
+            i += 1
+            continue
+
         return i, "본문종료"
 
     return hard_end, "다음문제"
@@ -296,7 +278,7 @@ def build(rows, page_width):
         else:
             dropped_x.append(c)
 
-    # 5) 번호 보정 (파일 + 표기별로 흐름 추적)
+    # 5) 번호 보정
     prev = {}
     for c in kept:
         key = (c["line"].get("_file"), c["name"])
@@ -326,14 +308,43 @@ def build(rows, page_width):
             "head": txt(c["line"])[:90],
             "body": body, "lines": len(body),
             "figs": figs, "reason": reason,
-            "trimmed": hard - end,
         })
+
+    # 7) 발문이 그림을 가리키는데 본문에 그림이 없으면 인접 그림 추정
+    figs_by_page = defaultdict(list)
+    for ln in live:
+        if ln.get("type") in FIGURE_TYPES:
+            figs_by_page[(ln.get("_file"), ln.get("_page"))].append(ln)
+
+    for p in problems:
+        p["figs_guess"] = []
+        if p["figs"] or not FIGURE_REF.search(p["head"]):
+            continue
+        ys = [ry(b) for b in p["body"] if isinstance(ry(b), (int, float))]
+        if not ys:
+            continue
+        y0, y1 = min(ys), max(ys)
+        for f in figs_by_page.get((p["file"], p["page"]), []):
+            if id(f) in used_fig:
+                continue
+            fy = ry(f)
+            if not isinstance(fy, (int, float)):
+                continue
+            if y0 - FIGURE_GUESS_RANGE <= fy <= y1 + FIGURE_GUESS_RANGE:
+                p["figs_guess"].append(f)
+        for f in p["figs_guess"]:
+            used_fig.add(id(f))
 
     orphan = [ln for ln in live
               if ln.get("type") in FIGURE_TYPES and id(ln) not in used_fig]
 
+    need_fig = [p for p in problems
+                if FIGURE_REF.search(p["head"]) and not p["figs"]
+                and not p["figs_guess"]]
+
     return problems, kept, dropped_x, live, {
-        "dropped_bg": dropped_bg, "orphan": orphan, "bands": bands}
+        "dropped_bg": dropped_bg, "orphan": orphan, "bands": bands,
+        "need_fig": need_fig}
 
 
 def check_sequence(problems):
@@ -365,7 +376,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     W = []
     A = W.append
 
-    A("# 문제 추출 결과 v2")
+    A("# 문제 추출 결과 v3")
     A("")
     A(f"- 전체 줄 {len(rows):,} -> 유효 줄 {len(live):,}")
     A(f"- 시작 후보 {len(kept)+len(dropped_x)} -> 채택 {len(kept)} "
@@ -383,7 +394,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     for name, ps in sorted(byname.items(), key=lambda kv: -len(kv[1])):
         ls = sorted(p["lines"] for p in ps)
         A(f"| {name} | {len(ps)} | {ls[len(ls)//2]} | {ls[-1]} | "
-          f"{sum(len(p['figs']) for p in ps)} |")
+          f"{sum(len(p['figs'])+len(p['figs_guess']) for p in ps)} |")
     A("")
 
     A("## 2. 경계 종료 사유")
@@ -411,15 +422,19 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     warns = check_sequence(problems)
     empty = [p for p in problems if p["lines"] <= 1]
     huge = [p for p in problems if p["lines"] >= MAX_BODY_LINES]
+    guessed = sum(len(p["figs_guess"]) for p in problems)
     if empty:
-        A(f"- 본문이 거의 없는 문제 {len(empty)}개")
+        A(f"- 본문이 1줄뿐인 문제 {len(empty)}개")
     if huge:
         A(f"- 길이 한도에 걸린 문제 {len(huge)}개 (끝을 못 찾음)")
-    A(f"- 어느 문제에도 안 붙은 그림 {len(st['orphan'])}장")
+    A(f"- 어느 문제에도 안 붙은 그림 {len(st['orphan'])}장 (대부분 개념설명용)")
+    A(f"- 위치로 추정해 붙인 그림 {guessed}장")
+    if st.get("need_fig"):
+        A(f"- **발문이 그림을 가리키는데 그림이 없는 문제 {len(st['need_fig'])}개**")
+        for p in st["need_fig"][:10]:
+            A(f"    - p{p['page']} {p['head'][:52]}")
     for w in warns[:20]:
         A(f"- {w}")
-    if not (warns or empty or huge or st["orphan"]):
-        A("- 없음")
     A("")
 
     A("## 5. 파일별 x 대역")
@@ -445,9 +460,9 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     A(f"## 7. 추출된 문제 (앞 {samples}개)")
     A("")
     for p in problems[:samples]:
+        nfig = len(p["figs"]) + len(p["figs_guess"])
         A(f"### [{p['name']} {p['num']}] p{p['page']} "
-          f"본문{p['lines']}줄 그림{len(p['figs'])}장 "
-          f"종료={p['reason']}")
+          f"본문{p['lines']}줄 그림{nfig}장 종료={p['reason']}")
         A("")
         A("```")
         for b in p["body"][:20]:
@@ -465,8 +480,9 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     A("| # | 표기 | 번호 | p | 본문줄 | 그림 | 종료 | 첫 줄 |")
     A("|---|---|---|---|---|---|---|---|")
     for i, p in enumerate(problems, 1):
+        g = f"+{len(p['figs_guess'])}" if p["figs_guess"] else ""
         A(f"| {i} | {p['name']} | {p['num']} | {p['page']} | "
-          f"{p['lines']} | {len(p['figs'])} | {p['reason']} | "
+          f"{p['lines']} | {len(p['figs'])}{g} | {p['reason']} | "
           f"{p['head'][:40]} |")
     A("")
 
