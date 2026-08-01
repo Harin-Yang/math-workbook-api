@@ -1,35 +1,29 @@
 #!/usr/bin/env python3
 """
-extract.py  v5
+extract.py  v6
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
     python3 scripts/extract.py ./stage0_out ./EXTRACT.md
 
-v2 에서 고친 것:
-  - 발문이 그림을 가리키는데 본문에 그림이 없으면 같은 높이대의 그림을 추정해 붙인다
-  - 그래도 못 찾으면 '그림 없음' 으로 따로 경고한다
-
 v3 에서 고친 것:
   - 윗줄에 딸린 줄(parent_id 있음)을 무조건 시작 후보에서 빼던 것을 바로잡았다.
-    Mathpix 가 쪽 전체를 한 덩어리(column)로 묶으면 진짜 발문까지 그 덩어리의
-    자식이 되어 통째로 사라졌다. 이제 부모가 묶음 상자면 통과시킨다.
 
 v4 에서 고친 것:
   - 예제·유제의 풀이를 본문에 끌고 오던 것을 바로잡았다.
-    '풀이 / 답 / 정답 / 증명 / 해설' 이 나오면 거기서 끊는다.
-  - '탐구 (1)' 처럼 괄호가 붙은 것은 탐구 활동의 소문항이므로 문제로 세지 않는다.
+  - '탐구 (1)' 처럼 괄호가 붙은 것은 소문항이므로 문제로 세지 않는다.
   - 번호를 억지로 키우던 보정을 없씔다. 소단원이 바뀌면 번호는 1로 돌아간다.
   - 껍데기 판정을 타입 이름이 아니라 '글자가 없는 줄' 로 바꿨다.
-    Mathpix 가 발문을 list_item 껍데기로 감싸는 경우가 있어 통째로 빠졌다.
 
 v5 에서 고친 것:
-  - 끝 판정에 '세로 간격' 을 더했다. 발문이 끝난 뒤 줄 간격이 평소의 4배를 넘으면
-    다른 덩어리로 보고 끊는다.
+  - 끝 판정에 '세로 간격' 을 더했다.
   - 예제·유제도 발문이 끝나면 다음 서술문에서 끊는다.
-    OCR 이 '증명' 을 '정명' 으로 읽어 풀이 표기를 놓치면 증명 본문 전체를
-    발문에 끌어붙이던 문제를 없앱다.
   - 풀이 표기에 OCR 오독 형태(정명 등)를 추가했다.
+
+v6 에서 더한 것:
+  - '문제 N' 같은 표기 없이 지문으로 시작하는 문제도 찾는다.
+    x 대역 / 글자 크기 / 위쪽 여백 / 명령형 어미, 네 조건이 동시에 맞을 때만
+    인정해서 개념 설명이 딸려 들어오는 것을 막는다.
 """
 
 import argparse
@@ -73,8 +67,6 @@ BODY_TYPES = {"text", "math", "list_item", "multiple_choice_block",
               "table_column", "form_field", "figure_label"}
 
 # 내용이 아니라 자리만 잡는 묶음 상자. 이 밑에 딸린 줄은 곁글이 아니다.
-# 타입 이름은 판마다 달라지므로(column / list_item / ...) 이름으로 판단하지 않고,
-# '글자가 없는 껍데기' 인지로 판단한다. is_shell() 참고.
 CONTAINER_TYPES = {"column", "container", "group", "region", "block"}
 
 DROP_TYPES = {"page_info"}
@@ -85,6 +77,13 @@ CONTINUE_SUBTYPES = {"continues_line_space", "continues_line_no_space",
 
 GAP_FACTOR = 4          # 보통 줄 간격의 몇 배부터 '다른 덩어리' 로 볼지
 GAP_MIN = 60            # 그래도 이보다 좁으면 끊지 않는다
+
+# 표기 없는 문제 시작 찾기
+UNMARKED = True           # 표기 없이 지문으로 시작하는 문제도 찾을지
+UNMARKED_MIN_CHARS = 12   # 이보다 짧은 줄은 시작으로 보지 않는다
+UNMARKED_LOOK = 8         # 이 줄 수 안에 명령형 어미가 나와야 발문으로 인정
+UNMARKED_FONT_TOL = 6     # 발문 글자 크기와 이만큼까지 차이 허용
+UNMARKED_NEAR = 2         # 이미 잡힌 시작과 이 줄 수 안이면 중복으로 본다
 
 MAX_TITLE_FONT = 60
 FIGURE_MAX_WIDTH_RATIO = 0.75
@@ -154,11 +153,7 @@ def is_display_math(ln):
 
 
 def is_shell(ln):
-    """자리만 잡는 껍데기 줄인가.
-
-    Mathpix 는 발문을 list_item / column 같은 빈 껍데기로 한 번 감싸고
-    글자는 그 자식 줄에 넣는다. 껍데기에 딸렸다는 이유로 발문을 버리면 안 된다.
-    """
+    """자리만 잡는 껍데기 줄인가."""
     if ln.get("type") in CONTAINER_TYPES:
         return True
     return not txt(ln)
@@ -181,11 +176,8 @@ def match_start(ln):
 def fix_number(raw, prev):
     """
     OCR 이 번호와 본문을 붙여 읽은 것만 떼어낸다.
-      직전 8 + '9100' -> 9      직전 2 + '33' -> 3
-      직전 13 + '14'  -> 14     첫 문제 + '12' -> 1
 
-    번호를 억지로 키우지 않는다. 교과서는 소단원이 바뀌면 번호가 1로 돌아가므로
-    되돌아간 번호는 그대로 인정한다. (원본 번호와 쪽은 라벨로만 쓴다)
+    번호를 억지로 키우지 않는다. 교과서는 소단원이 바뀌면 번호가 1로 돌아간다.
     """
     if raw is None:
         return None, False
@@ -230,6 +222,86 @@ def learn_gaps(live):
         gs.sort()
         med = gs[len(gs) // 2] if gs else 0
         out[fname] = max(GAP_MIN, med * GAP_FACTOR)
+    return out
+
+
+def find_unmarked(live, marked, bands, gap_thr):
+    """'문제 N' 표기 없이 지문으로 시작하는 문제를 찾는다.
+
+    표기 대신 네 가지가 동시에 맞아야 인정한다.
+      1. 이미 배운 발문 x 대역 안에 있을 것
+      2. 발문 글자 크기와 비슷할 것
+      3. 바로 위에 문단이 바널 만큼의 빈 공간이 있을 것
+      4. 몇 줄 안에 '~시오 / ~보자' 같은 명령형 어미가 나올 것
+
+    넷 다 맞아야 하므로 개념 설명이나 풀이가 딸려 들어올 여지를 줄인다.
+    """
+    if not marked:
+        return []
+
+    # 발문 글자 크기 배우기
+    fonts = defaultdict(list)
+    for c in marked:
+        fs = c["line"].get("font_size")
+        if isinstance(fs, (int, float)):
+            fonts[c["line"].get("_file")].append(fs)
+    med_font = {}
+    for fname, fs in fonts.items():
+        fs.sort()
+        med_font[fname] = fs[len(fs) // 2]
+
+    taken = {c["idx"] for c in marked}
+    out = []
+    for i, ln in enumerate(live):
+        if any(abs(i - t) <= UNMARKED_NEAR for t in taken):
+            continue
+        if ln.get("type") not in BODY_TYPES:
+            continue
+        t = txt(ln)
+        if len(t) < UNMARKED_MIN_CHARS or is_image_md(t):
+            continue
+        if SUB_ITEM.match(t) or SOLUTION.match(t):
+            continue
+        if match_start(ln):
+            continue
+        if not re.match(r"^[가-힣]", t):
+            continue
+
+        fname = ln.get("_file")
+
+        band = bands.get(fname)
+        x = rx(ln)
+        if band is None or not isinstance(x, (int, float)):
+            continue
+        if abs(x - band[0]) > band[1]:
+            continue
+
+        mf = med_font.get(fname)
+        fs = ln.get("font_size")
+        if mf is not None and isinstance(fs, (int, float)) \
+                and abs(fs - mf) > UNMARKED_FONT_TOL:
+            continue
+
+        thr = gap_thr.get(fname)
+        g = line_gap(live[i - 1], ln) if i > 0 else None
+        if not thr or g is None or g < thr:
+            continue
+
+        # 몇 줄 안에 명령형 어미가 나와야 발문이다
+        ok = False
+        for k in range(i, min(i + UNMARKED_LOOK, len(live))):
+            if live[k].get("_file") != fname:
+                break
+            if ORDER_END.search(txt(live[k])):
+                ok = True
+                break
+        if not ok:
+            continue
+
+        out.append({"idx": i, "line": ln, "name": "지문",
+                    "raw": None, "kind": "문제"})
+        taken.add(i)
+
     return out
 
 
@@ -291,9 +363,6 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
             continue
 
         # 발문이 끝난 뒤 처음 나오는 서술문부터는 문제가 아니다.
-        # 예제·유제도 마찬가지다. (v2 에서 예제만 계속 이어가게 똔는데,
-        #  OCR 이 '증명' 을 '정명' 으로 읽는 등 풀이 표기를 놓치면
-        #  증명 본문 전체를 발문에 끌어붙였다)
         return i, "본문종료"
 
     return hard_end, "다음문제"
@@ -335,7 +404,6 @@ def build(rows, page_width):
         pid = ln.get("parent_id")
         if pid:
             par = by_id.get((ln.get("_file"), pid))
-            # 부모를 못 찾으면 판단할 근거가 없으므로 통과시킨다.
             if par is not None and not is_shell(par):
                 continue
         if ln.get("type") not in BODY_TYPES:
@@ -371,9 +439,19 @@ def build(rows, page_width):
         else:
             dropped_x.append(c)
 
-    # 5) 번호 정리 (억지로 키우지 않는다)
+    # 4-2) 표기 없이 지문으로 시작하는 문제 찾기
+    gap_thr = learn_gaps(live)
+    unmarked = find_unmarked(live, kept, bands, gap_thr) if UNMARKED else []
+    if unmarked:
+        kept = sorted(kept + unmarked, key=lambda c: c["idx"])
+
+    # 5) 번호 보정 (표기가 없으면 번호도 없다)
     prev = {}
     for c in kept:
+        if c["raw"] is None:
+            c["num"] = None
+            c["num_fixed"] = False
+            continue
         key = (c["line"].get("_file"), c["name"])
         num, fixed = fix_number(c["raw"], prev.get(key))
         c["num"] = num
@@ -382,7 +460,6 @@ def build(rows, page_width):
             prev[key] = num
 
     # 6) 경계 확정
-    gap_thr = learn_gaps(live)
     problems = []
     used_fig = set()
     for n, c in enumerate(kept):
@@ -438,15 +515,12 @@ def build(rows, page_width):
 
     return problems, kept, dropped_x, live, {
         "dropped_bg": dropped_bg, "orphan": orphan, "bands": bands,
-        "need_fig": need_fig, "gap_thr": gap_thr}
+        "need_fig": need_fig, "gap_thr": gap_thr,
+        "unmarked": len(unmarked)}
 
 
 def check_sequence(problems):
-    """번호 결손을 알린다.
-
-    소단원이 바뀌면 번호가 1로 돌아가는 것은 정상이므로,
-    번호가 1로 되돌아간 지점은 새 묶음의 시작으로 본다.
-    """
+    """번호 결손을 알린다. 번호가 1로 되돌아간 지점은 새 묶음으로 본다."""
     warns = []
     groups = defaultdict(list)
     for p in problems:
@@ -477,12 +551,13 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     W = []
     A = W.append
 
-    A("# 문제 추출 결과 v5")
+    A("# 문제 추출 결과 v6")
     A("")
     A(f"- 전체 줄 {len(rows):,} -> 유효 줄 {len(live):,}")
     A(f"- 시작 후보 {len(kept)+len(dropped_x)} -> 채택 {len(kept)} "
       f"/ 위치이탈 제외 {len(dropped_x)}")
-    A(f"- 추출 문제 {len(problems)}개")
+    A(f"- 추출 문제 {len(problems)}개 "
+      f"(그중 표기 없이 지문으로 시작한 것 {st.get('unmarked', 0)}개)")
     A("")
 
     A("## 1. 표기별")
