@@ -8,7 +8,9 @@ WORKDIR="$HOME/mathocr"
 FILES=(
   "pull.sh"
   "scripts/stage0.py"
+  "scripts/analyze.py"
   "scripts/run.sh"
+  "scripts/run_analyze.sh"
 )
 
 mkdir -p "$WORKDIR/scripts"
@@ -60,5 +62,6 @@ else
 fi
 
 echo
-echo "동기화 완료. 다음 명령:"
-echo "  bash scripts/run.sh"
+echo "동기화 완료. 명령:"
+echo "  bash scripts/run.sh          # Mathpix 측정 (과금)"
+echo "  bash scripts/run_analyze.sh  # 기존 결과 재분석 (무료)"
