@@ -4,8 +4,11 @@
 #
 # 주의: 이 스크립트는 자기 자신을 덮어쓴다.
 # bash 는 파일을 조금씩 읽어가며 실행하므로, 실행 도중 파일이 바뀌면
-# 엉뚝한 위치부터 읽어 문법 오류가 난다.
+# 엉뚱한 위치부터 읽어 문법 오류가 난다.
 # 그래서 전체를 main() 함수로 감싸고, 호출과 exit 를 한 줄에 둔다.
+#
+# v2: 파일 이름을 하나하나 적던 방식을 버리고 scripts/ 폴더를 통째로 받는다.
+#     (새 스크립트를 추가할 때마다 pull.sh 를 두 번 돌려야 했던 문제를 없앤다)
 set -u
 
 main() {
@@ -32,19 +35,23 @@ main() {
     return 1
   fi
 
-  local f
-  for f in pull.sh \
-           scripts/stage0.py scripts/analyze.py scripts/extract.py \
-           scripts/preview.py \
-           scripts/run.sh scripts/run_analyze.sh scripts/run_extract.sh \
-           scripts/run_preview.sh; do
-    if [ -f "$TMP/$f" ]; then
-      cp "$TMP/$f" "$f"
-      echo "  OK   $f  ($(wc -l < "$f")줄)"
-    else
-      echo "  SKIP $f"
-    fi
-  done
+  local f base
+  if [ -d "$TMP/scripts" ]; then
+    for f in "$TMP"/scripts/*; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      cp "$f" "scripts/$base"
+      echo "  OK   scripts/$base  ($(wc -l < "$f")줄)"
+    done
+  else
+    echo "  실패: 받은 압축본에 scripts 폴더가 없습니다."
+    return 1
+  fi
+
+  if [ -f "$TMP/pull.sh" ]; then
+    cp "$TMP/pull.sh" pull.sh
+    echo "  OK   pull.sh  ($(wc -l < "$TMP/pull.sh")줄)"
+  fi
   chmod +x scripts/*.sh 2>/dev/null
 
   echo
@@ -89,6 +96,7 @@ main() {
   echo "  bash scripts/run_preview.sh   # 2단 조판 HTML 미리보기 (무료)"
   echo "  bash scripts/run_extract.sh   # 문제 추출 진단 (무료)"
   echo "  bash scripts/run_analyze.sh   # 구조 분석 (무료)"
+  echo "  bash scripts/run_grade.sh     # 자동 채점 (무료)"
   echo "  bash scripts/run.sh           # Mathpix 측정 (과금)"
 }
 
