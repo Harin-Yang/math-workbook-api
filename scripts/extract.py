@@ -5,6 +5,7 @@ lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원
 
 사용법:
     python3 scripts/extract.py ./stage0_out ./EXTRACT.md
+    python3 scripts/extract.py ./stage0_out ./EXTRACT.md --unmarked   # 시험용
 
 v3 에서 고친 것:
   - 윗줄에 딸린 줄(parent_id 있음)을 무조건 시작 후보에서 빼던 것을 바로잡았다.
@@ -20,10 +21,10 @@ v5 에서 고친 것:
   - 예제·유제도 발문이 끝나면 다음 서술문에서 끊는다.
   - 풀이 표기에 OCR 오독 형태(정명 등)를 추가했다.
 
-v6 에서 더한 것:
-  - '문제 N' 같은 표기 없이 지문으로 시작하는 문제도 찾는다.
-    x 대역 / 글자 크기 / 위쪽 여백 / 명령형 어미, 네 조건이 동시에 맞을 때만
-    인정해서 개념 설명이 딸려 들어오는 것을 막는다.
+v6 에서 더한 것 (기본 꿨짐):
+  - '문제 N' 같은 표기 없이 지문으로 시작하는 문제도 찾는 기능.
+    실측 결과 누락은 줄었으나 오검출률이 0.05 -> 0.11(기하) / 0.13(확통) 로 튀어
+    기본값을 꿨다. 조건을 더 조인 뒤 다시 켜야 한다. --unmarked 로 시험.
 """
 
 import argparse
@@ -79,7 +80,9 @@ GAP_FACTOR = 4          # 보통 줄 간격의 몇 배부터 '다른 덩어리' 
 GAP_MIN = 60            # 그래도 이보다 좁으면 끊지 않는다
 
 # 표기 없는 문제 시작 찾기
-UNMARKED = True           # 표기 없이 지문으로 시작하는 문제도 찾을지
+# 기하·확통 실측에서 오검출률이 0.05 -> 0.11 / 0.13 으로 튀어 기본은 꺼 둔다.
+# 조건을 더 조인 뒤 다시 켜야 한다.
+UNMARKED = False          # 표기 없이 지문으로 시작하는 문제도 찾을지
 UNMARKED_MIN_CHARS = 12   # 이보다 짧은 줄은 시작으로 보지 않는다
 UNMARKED_LOOK = 8         # 이 줄 수 안에 명령형 어미가 나와야 발문으로 인정
 UNMARKED_FONT_TOL = 6     # 발문 글자 크기와 이만큼까지 차이 허용
@@ -226,7 +229,7 @@ def learn_gaps(live):
 
 
 def find_unmarked(live, marked, bands, gap_thr):
-    """'문제 N' 표기 없이 지문으로 시작하는 문제를 찾는다.
+    """'문제 N' 표기 없이 지문으로 시작하는 문제를 찾는다. (기본 꿨짐)
 
     표기 대신 네 가지가 동시에 맞아야 인정한다.
       1. 이미 배운 발문 x 대역 안에 있을 것
@@ -234,7 +237,7 @@ def find_unmarked(live, marked, bands, gap_thr):
       3. 바로 위에 문단이 바널 만큼의 빈 공간이 있을 것
       4. 몇 줄 안에 '~시오 / ~보자' 같은 명령형 어미가 나올 것
 
-    넷 다 맞아야 하므로 개념 설명이나 풀이가 딸려 들어올 여지를 줄인다.
+    그래도 실측에서 오검출이 두 배 넘게 늘어 기본은 꺼 둔다.
     """
     if not marked:
         return []
@@ -439,7 +442,7 @@ def build(rows, page_width):
         else:
             dropped_x.append(c)
 
-    # 4-2) 표기 없이 지문으로 시작하는 문제 찾기
+    # 4-2) 표기 없이 지문으로 시작하는 문제 찾기 (기본 꿨짐)
     gap_thr = learn_gaps(live)
     unmarked = find_unmarked(live, kept, bands, gap_thr) if UNMARKED else []
     if unmarked:
@@ -673,7 +676,13 @@ def main():
     ap.add_argument("out_md")
     ap.add_argument("--file", default=None)
     ap.add_argument("--samples", type=int, default=12)
+    ap.add_argument("--unmarked", action="store_true",
+                    help="표기 없이 지문으로 시작하는 문제도 찾는다 (시험용)")
     args = ap.parse_args()
+
+    global UNMARKED
+    if args.unmarked:
+        UNMARKED = True
 
     runs = os.path.join(args.stage_dir, "runs")
     if not os.path.isdir(runs):
