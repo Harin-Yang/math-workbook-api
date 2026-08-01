@@ -4,10 +4,8 @@
 #
 # 주의: 이 스크립트는 자기 자신을 덮어쓴다.
 # bash 는 파일을 조금씩 읽어가며 실행하므로, 실행 도중 파일이 바뀌면
-# 엉뚱한 위치부터 읽어 문법 오류가 난다.
+# 엉뚝한 위치부터 읽어 문법 오류가 난다.
 # 그래서 전체를 main() 함수로 감싸고, 호출과 exit 를 한 줄에 둔다.
-# 함수 정의는 통째로 읽히고 exit 도 같은 줄에서 읽히므로
-# 그 뒤에 파일이 바뀌어도 안전하다.
 set -u
 
 main() {
@@ -37,7 +35,9 @@ main() {
   local f
   for f in pull.sh \
            scripts/stage0.py scripts/analyze.py scripts/extract.py \
-           scripts/run.sh scripts/run_analyze.sh scripts/run_extract.sh; do
+           scripts/preview.py \
+           scripts/run.sh scripts/run_analyze.sh scripts/run_extract.sh \
+           scripts/run_preview.sh; do
     if [ -f "$TMP/$f" ]; then
       cp "$TMP/$f" "$f"
       echo "  OK   $f  ($(wc -l < "$f")줄)"
@@ -86,7 +86,8 @@ main() {
 
   echo
   echo "동기화 완료. 명령:"
-  echo "  bash scripts/run_extract.sh   # 문제 추출 (무료)"
+  echo "  bash scripts/run_preview.sh   # 2단 조판 HTML 미리보기 (무료)"
+  echo "  bash scripts/run_extract.sh   # 문제 추출 진단 (무료)"
   echo "  bash scripts/run_analyze.sh   # 구조 분석 (무료)"
   echo "  bash scripts/run.sh           # Mathpix 측정 (과금)"
 }
