@@ -8,7 +8,6 @@
 # 그래서 전체를 main() 함수로 감싸고, 호출과 exit 를 한 줄에 둔다.
 #
 # v2: 파일 이름을 하나하나 적던 방식을 버리고 scripts/ 폴더를 통째로 받는다.
-#     (새 스크립트를 추가할 때마다 pull.sh 를 두 번 돌려야 했던 문제를 없앤다)
 set -u
 
 main() {
@@ -63,8 +62,8 @@ main() {
   # shellcheck disable=SC1091
   source venv/bin/activate
   pip install -q --upgrade pip
-  pip install -q requests pypdf pillow
-  echo "  requests / pypdf / pillow 준비됨"
+  pip install -q requests pypdf pillow python-docx pymupdf
+  echo "  requests / pypdf / pillow / python-docx / pymupdf 준비됨"
 
   echo
   echo "== 샘플 링크 =="
@@ -97,6 +96,7 @@ main() {
   echo "  bash scripts/run_extract.sh   # 문제 추출 진단 (무료)"
   echo "  bash scripts/run_analyze.sh   # 구조 분석 (무료)"
   echo "  bash scripts/run_grade.sh     # 자동 채점 (무료)"
+  echo "  bash scripts/run_docx.sh      # 2단 워드 문서 만들기 (무료)"
   echo "  bash scripts/run.sh           # Mathpix 측정 (과금)"
 }
 
