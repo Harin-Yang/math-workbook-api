@@ -24,18 +24,16 @@ v5 에서 고친 것:
 v6 에서 더한 것 (기본 꿨짐):
   - '문제 N' 같은 표기 없이 지문으로 시작하는 문제도 찾는 기능.
     실측에서 오검출률이 0.05 -> 0.11(기하) / 0.13(확통) 로 튀어 기본은 꺼다.
-    --unmarked 로 시험할 수 있다.
 
 v7 에서 고친 것:
-  - '윗줄에서 이어짐'(continues_line_*) 줄을 건너뛰기 전에 명령형 어미를 본다.
-    그냥 건너뛰면 '발문이 끝났다'를 영영 인식하지 못해 끝 판정이 멈추고
-    다음 문제까지 밀고 간다. 흡수됨 10건 / 넘침 15건의 공통 원인.
+  - 이어짐 줄을 건너뛰기 전에 명령형 어미를 먼저 본다.
 
 v8 에서 고친 것:
   - 이어짐 표시를 세로 간격으로 두 종류로 가른다.
-    바짝 붙었으면 같은 문장이니 계속 가고, 멀리 떨어졌으면 다른 덩어리로 끊는다.
-    v7 에서 어미가 나오면 무조건 끊어 발문 뒷부분을 잃던 것(잘림 7건)을 바로잡는다.
   - '(단, ...)' 같은 단서 절은 어미 뒤에 와도 발문의 일부로 본다.
+  - 쪽 크기를 page_width / page_height 에서 읽는다. (image_width 가 아니었다)
+    값을 못 읽어 '큰 그림 걸러내기' 가 통째로 꺼져 있었다.
+    각 줄에 그 쪽의 크기를 _pw / _ph 로 붙여 둔다 (조판 생성기가 쓴다).
 """
 
 import argparse
@@ -67,13 +65,14 @@ ORDER_END = re.compile(
 SUB_ITEM = re.compile(r"^\s*[(（\[]\s*\d{1,2}\s*[)）\]]|^\s*[①-⑳]|^\s*[⑴-⒇]")
 
 # 발문 뒤에 따라붙는 단서. '(단, 꺼낸 것은 다시 넣지 않는다)' 같은 것.
-# 어미로 끝난 뒤에 오지만 발문의 일부다.
 PROVISO = re.compile(r"^\s*[(（]?\s*(단|주의|참고로)\s*[,，]")
 
 # 예제의 풀이/답. '증명' 을 '정명' 으로 읽는 등 OCR 오독 형태도 함께 본다.
 SOLUTION = re.compile(r"^\s*(풀이|풀OI|답|정답|증명|정명|증멍|해설|해답|참고)")
 
 # 발문에서 그림을 가리키는 표현 (그림이 딸려야 하는 문제)
+# 이 규칙은 그림을 '짐작해서 붙이는' 데 쓰이므로 좀겁게 둔다.
+# 넓히면 오첨부가 늘어난다. 채점 쪽 규칙은 grade.py 의 NEED_FIG 를 볼 것.
 FIGURE_REF = re.compile(r"(오른쪽|아래|위의|다음)\s*(그림|표|도형)|그림과\s*같이|"
                         r"그림에서|그림은|정팔면체|정사면체|직육면체|정육면체")
 
@@ -94,13 +93,12 @@ CONTINUE_SUBTYPES = {"continues_line_space", "continues_line_no_space",
 GAP_FACTOR = 4          # 보통 줄 간격의 몇 배부터 '다른 덩어리' 로 볼지
 GAP_MIN = 60            # 그래도 이보다 좁으면 끊지 않는다
 
-# 표기 없는 문제 시작 찾기
-# 기하·확통 실측에서 오검출률이 0.05 -> 0.11 / 0.13 으로 튀어 기본은 꺼 둔다.
-UNMARKED = False          # 표기 없이 지문으로 시작하는 문제도 찾을지
-UNMARKED_MIN_CHARS = 12   # 이보다 짧은 줄은 시작으로 보지 않는다
-UNMARKED_LOOK = 8         # 이 줄 수 안에 명령형 어미가 나와야 발문으로 인정
-UNMARKED_FONT_TOL = 6     # 발문 글자 크기와 이만큼까지 차이 허용
-UNMARKED_NEAR = 2         # 이미 잡힌 시작과 이 줄 수 안이면 중복으로 본다
+# 표기 없는 문제 시작 찾기 (실측에서 오검출이 두 배로 늘어 기본은 꺼 둔다)
+UNMARKED = False
+UNMARKED_MIN_CHARS = 12
+UNMARKED_LOOK = 8
+UNMARKED_FONT_TOL = 6
+UNMARKED_NEAR = 2
 
 MAX_TITLE_FONT = 60
 FIGURE_MAX_WIDTH_RATIO = 0.75
@@ -125,17 +123,34 @@ def collect_pages(obj, out=None, hint=None):
     return out
 
 
+def page_size(pageobj):
+    """쪽의 픽셀 크기. Mathpix 는 page_width / page_height 로 준다."""
+    w = (pageobj.get("page_width") or pageobj.get("image_width")
+         or pageobj.get("width"))
+    h = (pageobj.get("page_height") or pageobj.get("image_height")
+         or pageobj.get("height"))
+    return (w if isinstance(w, (int, float)) else None,
+            h if isinstance(h, (int, float)) else None)
+
+
 def load(path):
+    """반환: (줄 목록, 가장 큰 쪽 폭)
+
+    각 줄에는 그 줄이 속한 쪽의 픽셀 크기를 _pw / _ph 로 붙여 둔다.
+    잘라내기(make_docx)와 큰 그림 걸러내기가 이 값을 쓴다.
+    """
     with open(path, encoding="utf-8") as f:
         doc = json.load(f)
     rows, widths = [], []
     for pg, pageobj, lines in collect_pages(doc):
-        w = pageobj.get("image_width") or pageobj.get("width")
-        if isinstance(w, (int, float)):
+        w, h = page_size(pageobj)
+        if w:
             widths.append(w)
         for ln in lines:
             d = dict(ln)
             d["_page"] = pg
+            d["_pw"] = w
+            d["_ph"] = h
             rows.append(d)
     return rows, (max(widths) if widths else None)
 
@@ -201,11 +216,11 @@ def fix_number(raw, prev):
     cands = [int(raw[:k]) for k in range(1, len(raw) + 1)]
     want = (prev + 1) if prev is not None else None
     if want is not None and want in cands:
-        pick = want          # 이어지는 번호
+        pick = want
     elif 1 in cands:
-        pick = 1             # 소단원이 바뀌어 1로 돌아간 경우
+        pick = 1
     else:
-        pick = cands[0]      # 판단 근거가 없으면 맨 앞 자리
+        pick = cands[0]
     return pick, (pick != cands[-1])
 
 
@@ -341,16 +356,13 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
 
         # '윗줄에서 이어짐' 표시에는 두 종류가 섞여 있다.
         #   진짜 이어짐 : 윗줄과 바짝 붙어 있다. 같은 문장이므로 계속 간다.
-        #   다음 덩어리 : 윗줄과 멀리 떨어져 있다. Mathpix 가 여기에도 같은
-        #                 표시를 붙이는 탓에, 표시만 보고 통과시키면
+        #   다음 덩어리 : 윗줄과 멀리 떨어져 있다. 표시만 보고 통과시키면
         #                 다음 문제를 통째로 삼킨다.
-        # 둘을 세로 간격으로 가른다.
         cont = ln.get("subtype") in CONTINUE_SUBTYPES
         thr = gap_thr.get(ln.get("_file")) if gap_thr else None
         g = line_gap(live[i - 1], ln)
         far = bool(thr and g is not None and g > thr)
 
-        # 발문이 끝난 뒤 멀리 떨어진 줄은 다른 덩어리다.
         if seen_order and far:
             return i, "간격"
 
@@ -362,7 +374,6 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
             continue
 
         if cont and not far:
-            # 같은 문장이 이어지는 중이다. 어미가 여기 있을 수 있으니 확인한다.
             if ORDER_END.search(t):
                 seen_order = True
             i += 1
@@ -376,7 +387,6 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
         if SUB_ITEM.match(t):
             i += 1
             continue
-        # 예제·유제는 발문 바로 뒤에 풀이가 붙는다. 풀이부터는 문제가 아니다.
         if kind in ("예제", "유제") and SOLUTION.match(t):
             return i, "풀이시작"
 
@@ -386,7 +396,6 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
                 seen_order = True
             continue
 
-        # 발문이 끝난 뒤 처음 나오는 서술문부터는 문제가 아니다.
         return i, "본문종료"
 
     return hard_end, "다음문제"
@@ -402,9 +411,12 @@ def build(rows, page_width):
             continue
         if ln.get("conversion_output") is False:
             continue
-        if ln.get("type") in FIGURE_TYPES and figmax:
+        if ln.get("type") in FIGURE_TYPES:
+            # 쪽별 폭이 있으면 그걸 쓰고, 없으면 문서 전체 최대폭으로 갈음한다
+            pwid = ln.get("_pw") or page_width
+            lim = pwid * FIGURE_MAX_WIDTH_RATIO if pwid else figmax
             w = rw(ln)
-            if isinstance(w, (int, float)) and w > figmax:
+            if lim and isinstance(w, (int, float)) and w > lim:
                 dropped_bg += 1
                 continue
         live.append(ln)
@@ -582,6 +594,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
       f"/ 위치이탈 제외 {len(dropped_x)}")
     A(f"- 추출 문제 {len(problems)}개 "
       f"(그중 표기 없이 지문으로 시작한 것 {st.get('unmarked', 0)}개)")
+    A(f"- 큰 그림으로 보고 걸러낸 것 {st.get('dropped_bg', 0)}장")
     A("")
 
     A("## 1. 표기별")
