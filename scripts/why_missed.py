@@ -16,8 +16,11 @@ grade.py 가 남긴 grade_out/<태그>.detail.json 의 미검출 목록을 읽�
   흡수됨       앞 문제의 본문에 딸려 들어갔다. 끝 판정 문제다.
   표기없음     지문으로 시작한다. 룰로는 어렵다.
 
-'표기있음' 이 많으면 룰을 더 고칠 여지가 있고,
-'표기없음' 이 대부분이면 판정 모델이 필요하다는 뜻이다.
+흡수된 경우는 삼킨 문제의 본문을 통째로 보여준다.
+어떤 건너뛰기 규칙에 걸려 통과됐는지 눈으로 확인하려는 것이다.
+
+주의: 한글 뼈대만으로 찾기 때문에, 수식만 다르고 문장이 같은 문제들은
+같은 자리를 가리킬 수 있다. '닮음 1.0' 이 여럿 개 겹치면 그 경우를 의심할 것.
 """
 
 import argparse
@@ -90,6 +93,8 @@ def main():
     ap.add_argument("--stage", default="./stage0_out")
     ap.add_argument("--outdir", default="./grade_out")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--dump", type=int, default=5,
+                    help="흡수됨 사례를 몇 개까지 본문째 보여줄지")
     args = ap.parse_args()
 
     detail = os.path.join(args.outdir, f"{args.tag}.detail.json")
@@ -125,7 +130,7 @@ def main():
 
         if best < 0 or best_s < MIN_SIM:
             out.append({**m, "why": "원본에없음", "sim": round(best_s, 2),
-                        "where": "", "detail": ""})
+                        "where": "", "detail": "", "host": None, "hit": -1})
             continue
 
         ln = live[best]
@@ -155,7 +160,8 @@ def main():
             det = EX.txt(ln)[:60]
 
         out.append({**m, "why": why, "sim": round(best_s, 2),
-                    "where": where, "detail": det})
+                    "where": where, "detail": det,
+                    "host": host, "hit": best})
 
     cnt = Counter(o["why"] for o in out)
 
@@ -190,6 +196,27 @@ def main():
         for o in rows_w:
             A(f"| {o['ref_num']} | {o['ref_page']} | {o['sim']} | "
               f"{o['where']} | {o['detail'][:48]} | {o['ref_head'][:34]} |")
+        A("")
+
+    # 흡수된 경우는 삼킨 문제의 본문을 통째로 보여준다.
+    eaten = [o for o in out if o["why"] == "흡수됨"]
+    if eaten:
+        A("## 흡수됨 상세 — 삼킨 문제의 본문")
+        A("")
+        A("```")
+        for o in eaten[:args.dump]:
+            h = o["host"]
+            A(f"[기준 {o['ref_num']}] 이 [{h['name']} {h['num']}] p{h['page']} "
+              f"안에 들어감 (종료={h['reason']}, 본문 {h['lines']}줄)")
+            for b in h["body"]:
+                t = EX.txt(b)
+                if EX.is_image_md(t):
+                    t = "<그림>"
+                mark = ">>" if id(b) == id(live[o["hit"]]) else "  "
+                A(f"  {mark} {str(b.get('type'))[:12]:<12} "
+                  f"sub={str(b.get('subtype'))[:22]:<22} {t[:56]}")
+            A("")
+        A("```")
         A("")
 
     out_md = args.out or os.path.join(args.outdir, f"WHY_{args.tag}.md")
