@@ -27,9 +27,10 @@ v6 에서 더한 것 (기본 꿨짐):
     --unmarked 로 시험할 수 있다.
 
 v7 에서 고친 것:
-  - '윗줄에서 이어짐'(continues_line_*) 표시를 무조건 통과시키던 것을 바로잡았다.
-    Mathpix 는 다음 덩어리의 첫 줄에도 이 표시를 붙인다. 그래서 발문이 끝난 뒤에도
-    통과시키면 다음 문제를 통째로 삼켰다. 이제 발문이 끝나기 전에만 통과시킨다.
+  - '윗줄에서 이어짐'(continues_line_*) 줄을 건너뛰기 전에 명령형 어미를 먼저 본다.
+    발문의 마지막 줄이 이어짐 표시를 달고 오는 경우가 흔한데, 그냥 건너뛰면
+    '발문이 끝났다'를 영영 인식하지 못해 끝 판정이 통째로 멈추고
+    다음 문제까지 밀고 간다. 흡수됨 10건 / 넘침 15건의 공통 원인.
 """
 
 import argparse
@@ -233,16 +234,7 @@ def learn_gaps(live):
 
 
 def find_unmarked(live, marked, bands, gap_thr):
-    """'문제 N' 표기 없이 지문으로 시작하는 문제를 찾는다. (기본 꿨짐)
-
-    표기 대신 네 가지가 동시에 맞아야 인정한다.
-      1. 이미 배운 발문 x 대역 안에 있을 것
-      2. 발문 글자 크기와 비슷할 것
-      3. 바로 위에 문단이 바널 만큼의 빈 공간이 있을 것
-      4. 몇 줄 안에 '~시오 / ~보자' 같은 명령형 어미가 나올 것
-
-    그래도 실측에서 오검출이 두 배 넘게 늘어 기본은 꺼 둔다.
-    """
+    """'문제 N' 표기 없이 지문으로 시작하는 문제를 찾는다. (기본 꿨짐)"""
     if not marked:
         return []
 
@@ -351,12 +343,18 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
         if typ in FIGURE_TYPES or is_display_math(ln) or not t:
             i += 1
             continue
+
         # '윗줄에서 이어짐' 표시는 발문이 여러 줄로 쫪개진 걸 잉기 위한 것이다.
-        # 발문이 이미 끝났으면 쓸 일이 없다. 그런데 Mathpix 는 다음 덩어리의
-        # 첫 줄에도 이 표시를 붙여서, 무조건 통과시키면 다음 문제를 통째로 삼킨다.
         if ln.get("subtype") in CONTINUE_SUBTYPES and not seen_order:
+            # 건너뛰기 전에 어미를 먼저 본다.
+            # 발문의 마지막 줄이 이어짐 표시를 달고 오는 경우가 흔한데,
+            # 그냥 건너뛰면 '발문이 끝났다'를 영영 인식하지 못해
+            # 끝 판정이 통째로 멈추고 다음 문제까지 밀고 간다.
+            if ORDER_END.search(t):
+                seen_order = True
             i += 1
             continue
+
         if SUB_ITEM.match(t):
             i += 1
             continue
