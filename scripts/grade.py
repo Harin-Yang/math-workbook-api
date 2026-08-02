@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-grade.py  v2
+grade.py  v3
 기준 파일(수기 편집본) 과 추출 결과를 자동 대조해 점수를 낸다.
 Mathpix 재호출 없음 = 비용 0원.
 
@@ -14,13 +14,13 @@ Mathpix 재호출 없음 = 비용 0원.
   3. 두 목록을 읽는 순서를 지키며 정렬 대조(alignment)한다
   4. 순서가 어긋나 빠진 짝은 따로 건져낸다 (rescue)
   5. 완전일치 / 잘림 / 넘침 / 부분일치 / 미검출 / 오검출 로 집계한다
-  6. 점수를 history.jsonl 에 쌓아 다음 실행 때 증감을 보여준다 (회귀 테스트)
+  6. 그림 귀속도 함께 채점한다 (기준 발문이 그림을 가리키는지를 정답으로)
+  7. 점수를 history.jsonl 에 쌓아 다음 실행 때 증감을 보여준다 (회귀 테스트)
 
 왜 한글만 비교하는가
   기준 파일(한/글 -> PDF) 은 텍스트를 뽑으면 수식과 숫자가 통째로 사라진다.
   추출 결과(Mathpix) 에는 수식이 살아 있다. 그대로 비교하면 전부 불일치가 된다.
   그래서 양쪽에서 수식·숫자·영문을 걷어내고 '한글 뼈대' 만 비교한다.
-  --keep-math 를 주면 수식을 남기고 비교한다 (기준 파일이 수식을 보존할 때만 의미 있음).
 """
 
 import argparse
@@ -137,7 +137,8 @@ def load_extracted(stage_dir, filters):
             "name": p["name"], "num": p["num"], "kind": p["kind"],
             "file": p["file"], "page": p["page"], "lines": p["lines"],
             "reason": p["reason"],
-            "figs": len(p["figs"]) + len(p["figs_guess"]),
+            "figs": len(p["figs"]),
+            "figs_guess": len(p["figs_guess"]),
             "text": re.sub(r"\s+", " ", " ".join(parts)).strip(),
             "head": p["head"],
         })
@@ -145,12 +146,7 @@ def load_extracted(stage_dir, filters):
 
 
 def load_reference(ref_pdf, ref_json, reuse):
-    """기준 파일을 읽는다.
-
-    기본은 매번 PDF 를 다시 읽는다. 파서를 고쳤는데 옛 결과가 재활용되면
-    점수가 안 바뀌어 원인을 찾기 어렵기 때문이다.
-    --ref-json 으로 경로를 직접 준 경우에만 있는 파일을 재활용한다.
-    """
+    """기준 파일을 읽는다. 기본은 매번 PDF 를 다시 읽는다."""
     if reuse and ref_json and os.path.exists(ref_json):
         with open(ref_json, encoding="utf-8") as f:
             return json.load(f)
@@ -237,12 +233,7 @@ def out_of_scope_ranges(scope, total_ref):
 # ------------------------------------------------------------------ 채점
 
 def rescue(pairs, rg, eg, n_ref, n_ext, rescue_sim):
-    """순서 정렬에서 빠진 짝을 건져낸다.
-
-    교과서와 편집본은 문제 순서가 어긋나는 구간이 있다(예제를 뒤로 몰아 편집 등).
-    순서를 지키는 정렬만으로는 이런 짝을 못 만든다.
-    그래서 남은 것끼리만, 충분히 닮은 경우에 한해 순서를 무시하고 짝지어 준다.
-    """
+    """순서 정렬에서 빠진 짝을 건져낸다."""
     used_r = {p[0] for p in pairs}
     used_e = {p[1] for p in pairs}
     left_r = [i for i in range(n_ref) if i not in used_r]
@@ -317,6 +308,9 @@ def judge(refs, exts, keep_math, min_sim, ok, gap_max, rescue_sim=RESCUE_SIM):
             "ext_head": exts[j]["text"][:110],
             "ext_chars": len(en[j]),
             "ext_reason": exts[j]["reason"],
+            "ref_need_fig": bool(EX.FIGURE_REF.search(refs[i]["text"])),
+            "ext_figs": exts[j]["figs"],
+            "ext_figs_guess": exts[j]["figs_guess"],
         })
 
     missed = [{
@@ -332,6 +326,47 @@ def judge(refs, exts, keep_math, min_sim, ok, gap_max, rescue_sim=RESCUE_SIM):
     } for j in range(len(exts)) if j not in matched_ext]
 
     return results, missed, false, scope, rescued
+
+
+def score_figs(results):
+    """그림 귀속을 채점한다.
+
+    기준 파일에는 그림 위치가 없다. 대신 기준 발문이 그림을 가리키는지를
+    정답으로 쓴다. '오른쪽 그림과 같이' 가 있으면 그 문제엔 그림이 있어야 한다.
+
+      정상        가리키고 붙었다 / 안 가리키고 안 붙었다
+      누락        가리키는데 안 붙었다
+      오첨부의심  안 가리키는데 붙었다
+      추정첨부    위치로 추정해 붙인 것 (확신 없이 붙인 것이므로 따로 센다)
+    """
+    out = {"정상": 0, "누락": 0, "오첨부의심": 0,
+           "추정첨부": 0, "필요": 0, "판정대상": 0}
+    cases = []
+    for r in results:
+        need = r.get("ref_need_fig")
+        have = r.get("ext_figs", 0)
+        guess = r.get("ext_figs_guess", 0)
+        out["판정대상"] += 1
+        if guess:
+            out["추정첨부"] += 1
+        if need:
+            out["필요"] += 1
+            if have or guess:
+                out["정상"] += 1
+            else:
+                out["누락"] += 1
+                cases.append(("누락", r))
+        else:
+            if have or guess:
+                out["오첨부의심"] += 1
+                cases.append(("오첨부의심", r))
+            else:
+                out["정상"] += 1
+
+    n = out["판정대상"]
+    out["오첨부율"] = round(out["오첨부의심"] / n, 4) if n else 0.0
+    out["그림누락률"] = round(out["누락"] / out["필요"], 4) if out["필요"] else 0.0
+    return out, cases
 
 
 def score_of(results, missed, false, scope, refs, exts):
@@ -520,7 +555,36 @@ def report(out_md, tag, refd, run_names, score, before, results, missed,
               f"{', '.join(secs)[:60]} |")
     A("")
 
-    A("## 7. 추출기 자체 경고")
+    fs, fcases = score_figs(results)
+    A("## 7. 그림 귀속 채점")
+    A("")
+    A("기준 발문이 그림을 가리키는지를 정답으로 삼는다.")
+    A("")
+    A("| 지표 | 값 |")
+    A("|---|---|")
+    A(f"| 판정 대상 (짝지어진 문제) | {fs['판정대상']} |")
+    A(f"| 그림이 필요한 문제 | {fs['필요']} |")
+    A(f"| 정상 | {fs['정상']} |")
+    A(f"| 누락 (필요한데 없음) | {fs['누락']} |")
+    A(f"| 오첨부 의심 (불필요한데 붙음) | {fs['오첨부의심']} |")
+    A(f"| 위치로 추정해 붙인 것 | {fs['추정첨부']} |")
+    A(f"| **오첨부율 (목표 0)** | **{fs['오첨부율']}** |")
+    A(f"| 그림 누락률 | {fs['그림누락률']} |")
+    A("")
+    if fcases:
+        A("### 사례 (앞 20개)")
+        A("")
+        A("| 판정 | 기준번호 | 쪽 | 그림 | 첫 줄 |")
+        A("|---|---|---|---|---|")
+        for w, r in fcases[:20]:
+            g = f"{r.get('ext_figs',0)}"
+            if r.get("ext_figs_guess"):
+                g += f"+추정{r['ext_figs_guess']}"
+            A(f"| {w} | {r['ref_num']} | {r['ref_page']} | {g} | "
+              f"{r['ref_head'][:40]} |")
+        A("")
+
+    A("## 8. 추출기 자체 경고")
     A("")
     A(f"- 어느 문제에도 안 붙은 그림 {len(st['orphan'])}장")
     A(f"- 발문이 그림을 가리키는데 그림이 없는 문제 {len(st.get('need_fig', []))}개")
@@ -580,6 +644,7 @@ def main():
         refs, exts, args.keep_math, args.min_sim, args.ok, args.gap_max,
         args.rescue)
     score = score_of(results, missed, false, scope, refs, exts)
+    figs, _fcases = score_figs(results)
 
     hist = os.path.join(args.outdir, "history.jsonl")
     before = read_history(hist, tag)
@@ -590,7 +655,7 @@ def main():
 
     detail = os.path.join(args.outdir, f"{tag}.detail.json")
     with open(detail, "w", encoding="utf-8") as f:
-        json.dump({"tag": tag, "score": score, "pairs": results,
+        json.dump({"tag": tag, "score": score, "fig": figs, "pairs": results,
                    "missed": missed, "false": false}, f,
                   ensure_ascii=False, indent=2)
 
@@ -604,6 +669,7 @@ def main():
                    "gap_max": args.gap_max, "keep_math": args.keep_math,
                    "rescue": args.rescue},
         "score": score,
+        "fig": figs,
     })
 
     print(f"완료: {out_md}")
@@ -613,6 +679,9 @@ def main():
           f"넘침 {score['넘침']} / 부분일치 {score['부분일치']} / "
           f"보류 {score['판정보류']}")
     print(f"미검출 {score['미검출']} / 오검출 {score['오검출']}")
+    print(f"그림 오첨부율 {figs['오첨부율']:.3f} / "
+          f"그림 누락률 {figs['그림누락률']:.3f} "
+          f"(추정첨부 {figs['추정첨부']}건)")
     print(f"정확도 {score['정확도']:.3f} / 누락률 {score['누락률']:.3f} / "
           f"오검출률 {score['오검출률']:.3f}")
     if before:
