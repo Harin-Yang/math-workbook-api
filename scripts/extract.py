@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract.py  v7
+extract.py  v8
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
@@ -27,10 +27,15 @@ v6 에서 더한 것 (기본 꿨짐):
     --unmarked 로 시험할 수 있다.
 
 v7 에서 고친 것:
-  - '윗줄에서 이어짐'(continues_line_*) 줄을 건너뛰기 전에 명령형 어미를 먼저 본다.
-    발문의 마지막 줄이 이어짐 표시를 달고 오는 경우가 흔한데, 그냥 건너뛰면
-    '발문이 끝났다'를 영영 인식하지 못해 끝 판정이 통째로 멈추고
+  - '윗줄에서 이어짐'(continues_line_*) 줄을 건너뛰기 전에 명령형 어미를 본다.
+    그냥 건너뛰면 '발문이 끝났다'를 영영 인식하지 못해 끝 판정이 멈추고
     다음 문제까지 밀고 간다. 흡수됨 10건 / 넘침 15건의 공통 원인.
+
+v8 에서 고친 것:
+  - 이어짐 표시를 세로 간격으로 두 종류로 가른다.
+    바짝 붙었으면 같은 문장이니 계속 가고, 멀리 떨어졌으면 다른 덩어리로 끊는다.
+    v7 에서 어미가 나오면 무조건 끊어 발문 뒷부분을 잃던 것(잘림 7건)을 바로잡는다.
+  - '(단, ...)' 같은 단서 절은 어미 뒤에 와도 발문의 일부로 본다.
 """
 
 import argparse
@@ -60,6 +65,10 @@ ORDER_END = re.compile(
     r"\s*[.．]?\s*$")
 
 SUB_ITEM = re.compile(r"^\s*[(（\[]\s*\d{1,2}\s*[)）\]]|^\s*[①-⑳]|^\s*[⑴-⒇]")
+
+# 발문 뒤에 따라붙는 단서. '(단, 꺼낸 것은 다시 넣지 않는다)' 같은 것.
+# 어미로 끝난 뒤에 오지만 발문의 일부다.
+PROVISO = re.compile(r"^\s*[(（]?\s*(단|주의|참고로)\s*[,，]")
 
 # 예제의 풀이/답. '증명' 을 '정명' 으로 읽는 등 OCR 오독 형태도 함께 본다.
 SOLUTION = re.compile(r"^\s*(풀이|풀OI|답|정답|증명|정명|증멍|해설|해답|참고)")
@@ -330,12 +339,20 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
         if typ == "section_header":
             return i, "단원제목"
 
-        # 발문이 끝난 뒤 세로 간격이 확 벌어지면 다른 덩어리다.
-        if seen_order and gap_thr:
-            thr = gap_thr.get(ln.get("_file"))
-            g = line_gap(live[i - 1], ln)
-            if thr and g is not None and g > thr:
-                return i, "간격"
+        # '윗줄에서 이어짐' 표시에는 두 종류가 섞여 있다.
+        #   진짜 이어짐 : 윗줄과 바짝 붙어 있다. 같은 문장이므로 계속 간다.
+        #   다음 덩어리 : 윗줄과 멀리 떨어져 있다. Mathpix 가 여기에도 같은
+        #                 표시를 붙이는 탓에, 표시만 보고 통과시키면
+        #                 다음 문제를 통째로 삼킨다.
+        # 둘을 세로 간격으로 가른다.
+        cont = ln.get("subtype") in CONTINUE_SUBTYPES
+        thr = gap_thr.get(ln.get("_file")) if gap_thr else None
+        g = line_gap(live[i - 1], ln)
+        far = bool(thr and g is not None and g > thr)
+
+        # 발문이 끝난 뒤 멀리 떨어진 줄은 다른 덩어리다.
+        if seen_order and far:
+            return i, "간격"
 
         if i - start >= MAX_BODY_LINES:
             return i, "길이초과"
@@ -344,14 +361,15 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
             i += 1
             continue
 
-        # '윗줄에서 이어짐' 표시는 발문이 여러 줄로 쫪개진 걸 잉기 위한 것이다.
-        if ln.get("subtype") in CONTINUE_SUBTYPES and not seen_order:
-            # 건너뛰기 전에 어미를 먼저 본다.
-            # 발문의 마지막 줄이 이어짐 표시를 달고 오는 경우가 흔한데,
-            # 그냥 건너뛰면 '발문이 끝났다'를 영영 인식하지 못해
-            # 끝 판정이 통째로 멈추고 다음 문제까지 밀고 간다.
+        if cont and not far:
+            # 같은 문장이 이어지는 중이다. 어미가 여기 있을 수 있으니 확인한다.
             if ORDER_END.search(t):
                 seen_order = True
+            i += 1
+            continue
+
+        # '(단, ...)' 같은 단서는 어미 뒤에 와도 발문의 일부다.
+        if seen_order and PROVISO.match(t):
             i += 1
             continue
 
@@ -557,7 +575,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     W = []
     A = W.append
 
-    A("# 문제 추출 결과 v7")
+    A("# 문제 추출 결과 v8")
     A("")
     A(f"- 전체 줄 {len(rows):,} -> 유효 줄 {len(live):,}")
     A(f"- 시작 후보 {len(kept)+len(dropped_x)} -> 채택 {len(kept)} "
