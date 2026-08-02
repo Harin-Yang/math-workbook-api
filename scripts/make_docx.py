@@ -10,24 +10,26 @@ make_docx.py
 수식을 어떻게 넣는가
     지금은 '원본 페이지에서 그 자리를 오려낸 그림' 으로 넣는다.
     Mathpix 가 모든 줄의 좌표를 주므로 원본 PDF 의 그 사각형만 그려내면 된다.
-    화면에 보이던 그대로 나온다.
 
-    대신 그 줄은 편집할 수 없다. 조판이 제대로 되는지 먼저 눈으로 확인하는 게
-    목적이므로 이 방식으로 시작한다. 수식을 한/글에서 고칠 수 있어야 하면
+    대신 그 줄은 편집할 수 없다. 수식을 한/글에서 고칠 수 있어야 하면
     LaTeX -> OMML 변환기를 붙여야 하는데, 그건 조판이 통과된 뒤에 한다.
-
     수식이 없는 줄은 진짜 글자로 들어가므로 편집된다.
+
+크기를 어떻게 맞추는가
+    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쎄날쎄해진다.
+    파일마다 '본문 한 줄이 껉 찹을 때의 폭' 을 배워 그걸 칼럼 폭에 맞춘다.
+    원본에서의 상대 크기가 그대로 유지된다.
 
 필요한 것
     pip install python-docx pymupdf
     원본 PDF 가 samples/테스트자료_스캔본/<run 폴더 이름>.pdf 에 있어야 한다.
-    없으면 그 줄은 글자로 대체하고 넘어간다.
 """
 
 import argparse
 import os
 import re
 import sys
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -75,6 +77,29 @@ def find_source_pdf(pdf_dirs, run_name):
     return None
 
 
+def learn_body_width(rows):
+    """파일마다 '본문 한 줄이 껉 찹을 때의 픽셀 폭' 을 배운다.
+
+    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쎄날쎄해진다.
+    본문 폭을 칼럼 폭에 맞춰 두면 원본에서의 상대 크기가 그대로 유지된다.
+    (원본에서 한 줄을 껉 채우던 것은 칼럼도 껉 채우고, 절반짜리는 절반)
+
+    큰 그림이 폭을 부풀리지 않게 위쪽 10% 는 버리고 그 다음 값을 쓴다.
+    """
+    per = defaultdict(list)
+    for ln in rows:
+        if ln.get("type") in EX.FIGURE_TYPES:
+            continue
+        w = (ln.get("region") or {}).get("width")
+        if isinstance(w, (int, float)) and w > 0:
+            per[ln.get("_file")].append(w)
+    out = {}
+    for fname, ws in per.items():
+        ws.sort()
+        out[fname] = ws[int(len(ws) * 0.90)] if ws else None
+    return out
+
+
 def learn_page_widths(rows):
     """쪽마다 픽셀 폭을 정한다. 반환: {(파일, 쪽): 폭}
 
@@ -94,16 +119,17 @@ def learn_page_widths(rows):
             guess[key] = max(guess.get(key, 0), x + ww)
     for key, v in guess.items():
         if key not in out:
-            out[key] = v * 1.02      # 오른쪽 여백 몲을 조금 엹는다
+            out[key] = v * 1.02
     return out
 
 
 class Cropper:
     """원본 PDF 에서 필요한 사각형만 그려낸다."""
 
-    def __init__(self, pdf_dirs, out_dir):
+    def __init__(self, pdf_dirs, out_dir, body_widths=None):
         self.pdf_dirs = pdf_dirs
         self.out_dir = out_dir
+        self.body_widths = body_widths or {}
         self.docs = {}       # run 이름 -> fitz.Document (없으면 None)
         self.pix = {}        # (run, page) -> (page, scale, 폭, 높이)
         self.n = 0
@@ -132,7 +158,6 @@ class Cropper:
         페이지 전체를 미리 그려두지 않는다. PyMuPDF 1.28 에서
         fitz.Pixmap(pixmap, IRect) 로 잘라내기가 깨져서,
         필요한 사각형만 clip 으로 바로 그리는 방식으로 바꿨다.
-        더 빠르고 메모리도 덜 쓴다.
         """
         key = (run_name, page_no)
         if key in self.pix:
@@ -197,8 +222,14 @@ class Cropper:
             self.note(f"저장실패({type(e).__name__})")
             return None
 
-        # 픽셀 -> mm (원본 PDF 의 점 단위를 거쳐 환산)
-        mm = (x1 - x0) / scale * 25.4 / 72
+        # 크기 환산.
+        # 본문 폭을 배웠으면 그걸 칼럼 폭에 맞춘다. 원본에서의 상대 크기가 유지된다.
+        # 못 배워으면 원본의 실제 물리 크기(점 -> mm)로 넣는다.
+        body = self.body_widths.get(ln.get("_file"))
+        if body:
+            mm = (x1 - x0) / body * col_width_mm()
+        else:
+            mm = (x1 - x0) / scale * 25.4 / 72
         return path, mm
 
 
@@ -214,6 +245,23 @@ def set_two_columns(section, gap_mm=GAP_MM):
     cols.set(qn("w:num"), "2")
     cols.set(qn("w:space"), str(int(gap_mm * 56.7)))   # mm -> twips
     cols.set(qn("w:equalWidth"), "1")
+
+
+def set_border(p, edge="bottom", size=6, color="BBBBBB"):
+    """문단에 선을 하나 긋는다. 문제 사이를 눈으로 가르는 용도."""
+    pPr = p._p.get_or_add_pPr()
+    found = pPr.xpath("./w:pBdr")
+    if found:
+        bdr = found[0]
+    else:
+        bdr = pPr.makeelement(qn("w:pBdr"), {})
+        pPr.append(bdr)
+    el = bdr.makeelement(qn(f"w:{edge}"), {})
+    el.set(qn("w:val"), "single")
+    el.set(qn("w:sz"), str(size))
+    el.set(qn("w:space"), "2")
+    el.set(qn("w:color"), color)
+    bdr.append(el)
 
 
 def add_label(doc, text):
@@ -253,12 +301,24 @@ def add_image(doc, path, width_mm, keep=True):
 
 
 def add_answer_space(doc, lines):
+    """답 쓸 자리. 빈 여백이면 어디 쓰는지 모르므로 얙은 밑줄을 깔다."""
     for k in range(lines):
         p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_before = Pt(4)
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.keep_with_next = (k < lines - 1)
         p.add_run(" ").font.size = Pt(10)
+        set_border(p, "bottom", 4, "DDDDDD")
+
+
+def add_separator(doc):
+    """문제와 문제 사이를 가르는 선."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(0)
+    p.add_run("").font.size = Pt(2)
+    set_border(p, "bottom", 8, "999999")
+    return p
 
 
 def build(problems, page_widths, cropper, out_path, title, answer_lines):
@@ -336,6 +396,7 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
             add_text(doc, t, keep=not last)
 
         add_answer_space(doc, answer_lines)
+        add_separator(doc)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".",
                 exist_ok=True)
@@ -361,7 +422,6 @@ def main():
         sys.exit("python-docx 가 없습니다.  pip install python-docx pymupdf")
     if fitz is None:
         print("경고: pymupdf 가 없어 수식·그림을 넣을 수 없습니다.")
-        print("      pip install pymupdf 후 다시 실행하세요.")
 
     runs = os.path.join(args.stage, "runs")
     if not os.path.isdir(runs):
@@ -395,7 +455,8 @@ def main():
         "samples/테스트자료_텍스트레이어",
         "s_scan", "s_text",
     ]
-    cropper = Cropper(pdf_dirs, args.cropdir)
+    body_widths = learn_body_width(all_rows)
+    cropper = Cropper(pdf_dirs, args.cropdir, body_widths)
 
     n_img, n_fail = build(problems, page_widths, cropper, args.out,
                           args.title, args.answer_lines)
