@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract.py  v6
+extract.py  v7
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
@@ -23,8 +23,13 @@ v5 에서 고친 것:
 
 v6 에서 더한 것 (기본 꿨짐):
   - '문제 N' 같은 표기 없이 지문으로 시작하는 문제도 찾는 기능.
-    실측 결과 누락은 줄었으나 오검출률이 0.05 -> 0.11(기하) / 0.13(확통) 로 튀어
-    기본값을 꿨다. 조건을 더 조인 뒤 다시 켜야 한다. --unmarked 로 시험.
+    실측에서 오검출률이 0.05 -> 0.11(기하) / 0.13(확통) 로 튀어 기본은 꺼다.
+    --unmarked 로 시험할 수 있다.
+
+v7 에서 고친 것:
+  - '윗줄에서 이어짐'(continues_line_*) 표시를 무조건 통과시키던 것을 바로잡았다.
+    Mathpix 는 다음 덩어리의 첫 줄에도 이 표시를 붙인다. 그래서 발문이 끝난 뒤에도
+    통과시키면 다음 문제를 통째로 삼켰다. 이제 발문이 끝나기 전에만 통과시킨다.
 """
 
 import argparse
@@ -81,7 +86,6 @@ GAP_MIN = 60            # 그래도 이보다 좁으면 끊지 않는다
 
 # 표기 없는 문제 시작 찾기
 # 기하·확통 실측에서 오검출률이 0.05 -> 0.11 / 0.13 으로 튀어 기본은 꺼 둔다.
-# 조건을 더 조인 뒤 다시 켜야 한다.
 UNMARKED = False          # 표기 없이 지문으로 시작하는 문제도 찾을지
 UNMARKED_MIN_CHARS = 12   # 이보다 짧은 줄은 시작으로 보지 않는다
 UNMARKED_LOOK = 8         # 이 줄 수 안에 명령형 어미가 나와야 발문으로 인정
@@ -242,7 +246,6 @@ def find_unmarked(live, marked, bands, gap_thr):
     if not marked:
         return []
 
-    # 발문 글자 크기 배우기
     fonts = defaultdict(list)
     for c in marked:
         fs = c["line"].get("font_size")
@@ -290,7 +293,6 @@ def find_unmarked(live, marked, bands, gap_thr):
         if not thr or g is None or g < thr:
             continue
 
-        # 몇 줄 안에 명령형 어미가 나와야 발문이다
         ok = False
         for k in range(i, min(i + UNMARKED_LOOK, len(live))):
             if live[k].get("_file") != fname:
@@ -349,7 +351,10 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
         if typ in FIGURE_TYPES or is_display_math(ln) or not t:
             i += 1
             continue
-        if ln.get("subtype") in CONTINUE_SUBTYPES:
+        # '윗줄에서 이어짐' 표시는 발문이 여러 줄로 쫪개진 걸 잉기 위한 것이다.
+        # 발문이 이미 끝났으면 쓸 일이 없다. 그런데 Mathpix 는 다음 덩어리의
+        # 첫 줄에도 이 표시를 붙여서, 무조건 통과시키면 다음 문제를 통째로 삼킨다.
+        if ln.get("subtype") in CONTINUE_SUBTYPES and not seen_order:
             i += 1
             continue
         if SUB_ITEM.match(t):
@@ -554,7 +559,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     W = []
     A = W.append
 
-    A("# 문제 추출 결과 v6")
+    A("# 문제 추출 결과 v7")
     A("")
     A(f"- 전체 줄 {len(rows):,} -> 유효 줄 {len(live):,}")
     A(f"- 시작 후보 {len(kept)+len(dropped_x)} -> 채택 {len(kept)} "
