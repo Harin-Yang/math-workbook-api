@@ -75,6 +75,30 @@ def find_source_pdf(pdf_dirs, run_name):
     return None
 
 
+def learn_page_widths(rows):
+    """쪽마다 픽셀 폭을 정한다. 반환: {(파일, 쪽): 폭}
+
+    Mathpix 가 page_width 를 주면 그걸 쓴다.
+    없으면 그 쪽 줄들의 오른쪽 끝 최댓값으로 역산한다.
+    머리말·꼬리말이 여백 가까이까지 묻어 있어 실제 폭에 거의 붙는다.
+    """
+    out, guess = {}, {}
+    for ln in rows:
+        key = (ln.get("_file"), ln.get("_page"))
+        w = ln.get("_pw")
+        if w:
+            out[key] = w
+            continue
+        r = ln.get("region") or {}
+        x, ww = r.get("top_left_x"), r.get("width")
+        if isinstance(x, (int, float)) and isinstance(ww, (int, float)):
+            guess[key] = max(guess.get(key, 0), x + ww)
+    for key, v in guess.items():
+        if key not in out:
+            out[key] = v * 1.02      # 오른쪽 여백 몲을 조금 엹는다
+    return out
+
+
 class Cropper:
     """원본 PDF 페이지를 Mathpix 와 같은 해상도로 그려두고 잘라 쓴다."""
 
@@ -84,7 +108,11 @@ class Cropper:
         self.docs = {}       # run 이름 -> fitz.Document (없으면 None)
         self.pix = {}        # (run, page) -> (pixmap, scale)
         self.n = 0
+        self.fail = {}       # 실패 사유별 건수
         os.makedirs(out_dir, exist_ok=True)
+
+    def note(self, why):
+        self.fail[why] = self.fail.get(why, 0) + 1
 
     def doc_for(self, run_name):
         if run_name in self.docs:
@@ -119,18 +147,25 @@ class Cropper:
     def crop(self, ln, image_width):
         """줄 하나를 오려 PNG 로 저장한다. 반환: (경로, 폭 mm) 또는 None"""
         if fitz is None:
+            self.note("pymupdf없음")
             return None
         r = ln.get("region") or {}
         x, y = r.get("top_left_x"), r.get("top_left_y")
         w, h = r.get("width"), r.get("height")
         if not all(isinstance(v, (int, float)) for v in (x, y, w, h)):
+            self.note("좌표없음")
             return None
         if w <= 0 or h <= 0:
+            self.note("크기0")
+            return None
+        if not image_width:
+            self.note("쪽폭모름")
             return None
 
         pm, scale = self.page_pixmap(ln.get("_file"), ln.get("_page"),
                                      image_width)
         if pm is None:
+            self.note("원본쪽없음")
             return None
 
         x0 = max(0, int(x) - PAD)
@@ -138,11 +173,13 @@ class Cropper:
         x1 = min(pm.width, int(x + w) + PAD)
         y1 = min(pm.height, int(y + h) + PAD)
         if x1 <= x0 or y1 <= y0:
+            self.note("범위밖")
             return None
 
         try:
             sub = fitz.Pixmap(pm, fitz.IRect(x0, y0, x1, y1))
         except Exception:
+            self.note("자르기실패")
             return None
 
         self.n += 1
@@ -150,6 +187,7 @@ class Cropper:
         try:
             sub.save(path)
         except Exception:
+            self.note("저장실패")
             return None
 
         # 픽셀 -> mm (원본 PDF 의 점 단위를 거쳐 환산)
@@ -328,7 +366,6 @@ def main():
         sys.exit("대상 run 폴더가 없습니다.")
 
     all_rows, pw = [], None
-    page_widths = {}
     for n in names:
         lj = os.path.join(runs, n, "result.lines.json")
         if not os.path.exists(lj):
@@ -336,7 +373,6 @@ def main():
         rows, w = EX.load(lj)
         for r in rows:
             r["_file"] = n
-            page_widths[(n, r.get("_page"))] = w
         all_rows.extend(rows)
         if w:
             pw = max(pw or 0, w)
@@ -344,6 +380,7 @@ def main():
     if not all_rows:
         sys.exit("lines.json 을 찾지 못했습니다.")
 
+    page_widths = learn_page_widths(all_rows)
     problems, kept, dropped, live, st = EX.build(all_rows, pw)
 
     pdf_dirs = args.pdfdir or [
@@ -358,6 +395,9 @@ def main():
 
     print(f"완료: {args.out}")
     print(f"문제 {len(problems)}개 / 오려낸 그림 {n_img}장 / 실패 {n_fail}건")
+    if cropper.fail:
+        print("실패 사유:", ", ".join(f"{k} {v}" for k, v in
+                                    sorted(cropper.fail.items())))
     missing = [k for k, v in cropper.docs.items() if v is None]
     if missing:
         print("원본 PDF 를 못 찾은 파일:")
