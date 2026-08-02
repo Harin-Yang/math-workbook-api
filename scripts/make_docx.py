@@ -9,8 +9,8 @@ make_docx.py
 
 수식을 어떻게 넣는가
     지금은 '원본 페이지에서 그 자리를 오려낸 그림' 으로 넣는다.
-    Mathpix 가 모든 줄의 좌표를 주므로 원본 PDF 를 같은 해상도로 그려서
-    그 사각형만 잘라내면 된다. 화면에 보이던 그대로 나온다.
+    Mathpix 가 모든 줄의 좌표를 주므로 원본 PDF 의 그 사각형만 그려내면 된다.
+    화면에 보이던 그대로 나온다.
 
     대신 그 줄은 편집할 수 없다. 조판이 제대로 되는지 먼저 눈으로 확인하는 게
     목적이므로 이 방식으로 시작한다. 수식을 한/글에서 고칠 수 있어야 하면
@@ -80,7 +80,6 @@ def learn_page_widths(rows):
 
     Mathpix 가 page_width 를 주면 그걸 쓴다.
     없으면 그 쪽 줄들의 오른쪽 끝 최댓값으로 역산한다.
-    머리말·꼬리말이 여백 가까이까지 묻어 있어 실제 폭에 거의 붙는다.
     """
     out, guess = {}, {}
     for ln in rows:
@@ -100,13 +99,13 @@ def learn_page_widths(rows):
 
 
 class Cropper:
-    """원본 PDF 페이지를 Mathpix 와 같은 해상도로 그려두고 잘라 쓴다."""
+    """원본 PDF 에서 필요한 사각형만 그려낸다."""
 
     def __init__(self, pdf_dirs, out_dir):
         self.pdf_dirs = pdf_dirs
         self.out_dir = out_dir
         self.docs = {}       # run 이름 -> fitz.Document (없으면 None)
-        self.pix = {}        # (run, page) -> (pixmap, scale)
+        self.pix = {}        # (run, page) -> (page, scale, 폭, 높이)
         self.n = 0
         self.fail = {}       # 실패 사유별 건수
         os.makedirs(out_dir, exist_ok=True)
@@ -127,20 +126,26 @@ class Cropper:
         self.docs[run_name] = d
         return d
 
-    def page_pixmap(self, run_name, page_no, image_width):
+    def page_of(self, run_name, page_no, image_width):
+        """(페이지, 배율, 픽셀폭, 픽셀높이). 못 얻으면 첫 값이 None.
+
+        페이지 전체를 미리 그려두지 않는다. PyMuPDF 1.28 에서
+        fitz.Pixmap(pixmap, IRect) 로 잘라내기가 깨져서,
+        필요한 사각형만 clip 으로 바로 그리는 방식으로 바꿨다.
+        더 빠르고 메모리도 덜 쓴다.
+        """
         key = (run_name, page_no)
         if key in self.pix:
             return self.pix[key]
         d = self.doc_for(run_name)
-        out = (None, 1.0)
+        out = (None, 1.0, 0, 0)
         if d is not None and isinstance(page_no, int) \
                 and 1 <= page_no <= d.page_count and image_width:
             pg = d[page_no - 1]
             scale = image_width / pg.rect.width
-            try:
-                out = (pg.get_pixmap(matrix=fitz.Matrix(scale, scale)), scale)
-            except Exception:
-                out = (None, 1.0)
+            out = (pg, scale,
+                   int(round(pg.rect.width * scale)),
+                   int(round(pg.rect.height * scale)))
         self.pix[key] = out
         return out
 
@@ -162,32 +167,34 @@ class Cropper:
             self.note("쪽폭모름")
             return None
 
-        pm, scale = self.page_pixmap(ln.get("_file"), ln.get("_page"),
-                                     image_width)
-        if pm is None:
+        pg, scale, pw_px, ph_px = self.page_of(ln.get("_file"),
+                                               ln.get("_page"), image_width)
+        if pg is None:
             self.note("원본쪽없음")
             return None
 
         x0 = max(0, int(x) - PAD)
         y0 = max(0, int(y) - PAD)
-        x1 = min(pm.width, int(x + w) + PAD)
-        y1 = min(pm.height, int(y + h) + PAD)
+        x1 = min(pw_px, int(x + w) + PAD)
+        y1 = min(ph_px, int(y + h) + PAD)
         if x1 <= x0 or y1 <= y0:
             self.note("범위밖")
             return None
 
+        # 픽셀 사각형을 원본 점 단위로 되돌려 그 부분만 그린다
+        clip = fitz.Rect(x0 / scale, y0 / scale, x1 / scale, y1 / scale)
         try:
-            sub = fitz.Pixmap(pm, fitz.IRect(x0, y0, x1, y1))
-        except Exception:
-            self.note("자르기실패")
+            sub = pg.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip)
+        except Exception as e:
+            self.note(f"자르기실패({type(e).__name__})")
             return None
 
         self.n += 1
         path = os.path.join(self.out_dir, f"crop_{self.n:05d}.png")
         try:
             sub.save(path)
-        except Exception:
-            self.note("저장실패")
+        except Exception as e:
+            self.note(f"저장실패({type(e).__name__})")
             return None
 
         # 픽셀 -> mm (원본 PDF 의 점 단위를 거쳐 환산)
