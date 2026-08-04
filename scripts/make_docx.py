@@ -26,6 +26,8 @@ make_docx.py
 """
 
 import argparse
+import base64
+import html
 import os
 import re
 import sys
@@ -321,6 +323,68 @@ def add_separator(doc):
     return p
 
 
+def iter_blocks(problems, page_widths, cropper):
+    """문제들을 조판 조각으로 풀어 낸다.
+
+    DOCX 와 HTML 미리보기가 이 하나를 같이 먹는다.
+    두 벌로 쓰면 미리보기에서 통과한 조판이 DOCX 에서 달라진다.
+
+    내보내는 조각:
+        ("file",  파일명)
+        ("label", 문제 머리)
+        ("text",  글줄, 다음과 붙일지)
+        ("image", PNG 경로, 폭mm, 다음과 붙일지)
+        ("imgfail",)
+        ("answer",)
+        ("sep",)
+    """
+    cur_file = None
+    for p in problems:
+        if p["file"] != cur_file:
+            cur_file = p["file"]
+            yield ("file", str(cur_file))
+
+        num = p["num"] if p["num"] is not None else ""
+        yield ("label", f"{p['name']} {num}   (원본 {p['page']}쪽)")
+
+        body = list(p["body"])
+        for f in list(p["figs"]) + list(p["figs_guess"]):
+            if f not in body:
+                body.append(f)
+
+        for k, b in enumerate(body):
+            last = (k == len(body) - 1)
+            t = EX.txt(b)
+            typ = b.get("type")
+            iw = page_widths.get((b.get("_file"), b.get("_page")))
+
+            if typ in EX.FIGURE_TYPES or EX.is_image_md(t) or \
+                    (t and HAS_MATH.search(t)) or EX.is_display_math(b):
+                got = cropper.crop(b, iw)
+                if got:
+                    yield ("image", got[0], got[1], not last)
+                else:
+                    yield ("imgfail",)
+                    if t and not EX.is_image_md(t):
+                        yield ("text", t, not last)
+                continue
+
+            if not t:
+                continue
+            if k == 0:
+                for _name, pat, _kind in EX.START_PATTERNS:
+                    m = pat.match(t)
+                    if m:
+                        t = t[m.end():].strip()
+                        break
+                if not t:
+                    continue
+            yield ("text", t, not last)
+
+        yield ("answer",)
+        yield ("sep",)
+
+
 def build(problems, page_widths, cropper, out_path, title, answer_lines):
     doc = Document()
 
@@ -344,63 +408,161 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
     r.bold = True
     r.font.size = Pt(13)
 
-    cur_file = None
     n_img, n_fail = 0, 0
 
-    for p in problems:
-        if p["file"] != cur_file:
-            cur_file = p["file"]
+    for ev in iter_blocks(problems, page_widths, cropper):
+        kind = ev[0]
+        if kind == "file":
             hp = doc.add_paragraph()
             hp.paragraph_format.space_before = Pt(12)
             hp.paragraph_format.keep_with_next = True
-            hr = hp.add_run(str(cur_file))
+            hr = hp.add_run(ev[1])
             hr.bold = True
             hr.font.size = Pt(11)
-
-        num = p["num"] if p["num"] is not None else ""
-        add_label(doc, f"{p['name']} {num}   (원본 {p['page']}쪽)")
-
-        body = list(p["body"])
-        for f in list(p["figs"]) + list(p["figs_guess"]):
-            if f not in body:
-                body.append(f)
-
-        for k, b in enumerate(body):
-            last = (k == len(body) - 1)
-            t = EX.txt(b)
-            typ = b.get("type")
-            iw = page_widths.get((b.get("_file"), b.get("_page")))
-
-            if typ in EX.FIGURE_TYPES or EX.is_image_md(t) or \
-                    (t and HAS_MATH.search(t)) or EX.is_display_math(b):
-                got = cropper.crop(b, iw)
-                if got:
-                    add_image(doc, got[0], got[1], keep=not last)
-                    n_img += 1
-                else:
-                    n_fail += 1
-                    if t and not EX.is_image_md(t):
-                        add_text(doc, t, keep=not last)
-                continue
-
-            if not t:
-                continue
-            if k == 0:
-                for _name, pat, _kind in EX.START_PATTERNS:
-                    m = pat.match(t)
-                    if m:
-                        t = t[m.end():].strip()
-                        break
-                if not t:
-                    continue
-            add_text(doc, t, keep=not last)
-
-        add_answer_space(doc, answer_lines)
-        add_separator(doc)
+        elif kind == "label":
+            add_label(doc, ev[1])
+        elif kind == "text":
+            add_text(doc, ev[1], keep=ev[2])
+        elif kind == "image":
+            add_image(doc, ev[1], ev[2], keep=ev[3])
+            n_img += 1
+        elif kind == "imgfail":
+            n_fail += 1
+        elif kind == "answer":
+            add_answer_space(doc, answer_lines)
+        elif kind == "sep":
+            add_separator(doc)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".",
                 exist_ok=True)
     doc.save(out_path)
+    return n_img, n_fail
+
+
+HTML_CSS = """
+:root{
+  --paper:#ffffff; --ink:#16181c; --ink-soft:#5a5f68;
+  --rule:#d3cec6; --label:#2f5d8a; --answer:#ded9d1;
+  --desk:#ebe8e2; --chrome:#ffffff; --chrome-ink:#2a2d33;
+  --chrome-rule:#dcd8d1;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --desk:#15171b; --chrome:#1c1f24; --chrome-ink:#dfe2e7;
+         --chrome-rule:#2e333a; }
+}
+:root[data-theme="dark"]{ --desk:#15171b; --chrome:#1c1f24;
+  --chrome-ink:#dfe2e7; --chrome-rule:#2e333a; }
+:root[data-theme="light"]{ --desk:#ebe8e2; --chrome:#ffffff;
+  --chrome-ink:#2a2d33; --chrome-rule:#dcd8d1; }
+
+*{ box-sizing:border-box; }
+body{
+  margin:0; background:var(--desk);
+  font-family:"Malgun Gothic","맑은 고딕","Apple SD Gothic Neo",
+              "Noto Sans KR",sans-serif;
+  color:var(--chrome-ink);
+}
+.bar{
+  position:sticky; top:0; z-index:5;
+  background:var(--chrome); border-bottom:1px solid var(--chrome-rule);
+  padding:10px 18px; display:flex; gap:18px; align-items:baseline;
+  flex-wrap:wrap; font-size:13px;
+}
+.bar b{ font-size:14px; }
+.bar .n{ font-variant-numeric:tabular-nums; }
+.bar .hint{ color:var(--ink-soft); margin-left:auto; }
+
+/* 종이는 두 테마에서 모두 흰색이다. 인쇄물 미리보기라 일부러 그렇게 둔다. */
+.sheet{
+  width:210mm; margin:18px auto; padding:14mm;
+  background:var(--paper); color:var(--ink);
+  box-shadow:0 1px 3px rgba(0,0,0,.18);
+}
+.title{ text-align:center; font-weight:700; font-size:13pt;
+        margin:0 0 10pt; text-wrap:balance; }
+.cols{ column-count:2; column-gap:7mm;
+       column-rule:1px solid var(--rule); }
+.filehead{ font-weight:700; font-size:11pt; margin:12pt 0 2pt; }
+.q{ break-inside:avoid; page-break-inside:avoid; }
+.label{ font-weight:700; font-size:9pt; color:var(--label);
+        margin:10pt 0 2pt; }
+.line{ font-size:10pt; line-height:1.5; margin:0 0 2pt; }
+.line img{ display:block; max-width:100%; margin:1pt 0; }
+.ans{ border-bottom:1px solid var(--answer); height:1.5em; margin-top:4pt; }
+.sep{ border-bottom:2px solid #999; margin:6pt 0 0; }
+.miss{ font-size:9pt; color:#a8442a; }
+
+@media print{
+  body{ background:#fff; }
+  .bar{ display:none; }
+  .sheet{ margin:0; box-shadow:none; width:auto; }
+}
+@media (max-width:230mm){
+  .sheet{ width:auto; margin:12px; padding:8mm; }
+}
+"""
+
+
+def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
+    """DOCX 와 같은 조각으로 브라우저 미리보기를 만든다.
+
+    그림은 base64 로 파일 안에 박는다. 이 파일 하나만 열면 다 보인다.
+    """
+    out, n_img, n_fail = [], 0, 0
+    A = out.append
+
+    A(f"<title>{html.escape(title)}</title>")
+    A(f"<style>{HTML_CSS}</style>")
+    A("<div class='bar'><b>" + html.escape(title) + "</b>")
+    A(f"<span class='n'>문제 {len(problems)}개</span>")
+    A("<span class='hint'>DOCX 와 같은 조판 코드로 그린 것이다. "
+      "Ctrl+P 로 쪽 나뉨까지 볼 수 있다.</span></div>")
+    A("<div class='sheet'>")
+    A(f"<div class='title'>{html.escape(title)}</div><div class='cols'>")
+
+    open_q = False
+    for ev in iter_blocks(problems, page_widths, cropper):
+        kind = ev[0]
+        if kind in ("file", "label") and open_q:
+            A("</div>")
+            open_q = False
+
+        if kind == "file":
+            A(f"<div class='filehead'>{html.escape(ev[1])}</div>")
+        elif kind == "label":
+            A("<div class='q'>")
+            open_q = True
+            A(f"<div class='label'>{html.escape(ev[1])}</div>")
+        elif kind == "text":
+            A(f"<div class='line'>{html.escape(ev[1])}</div>")
+        elif kind == "image":
+            try:
+                with open(ev[1], "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode("ascii")
+            except OSError:
+                n_fail += 1
+                continue
+            w = min(ev[2], col_width_mm())
+            A(f"<div class='line'><img src='data:image/png;base64,{b64}' "
+              f"style='width:{w:.1f}mm' alt=''></div>")
+            n_img += 1
+        elif kind == "imgfail":
+            n_fail += 1
+            A("<div class='miss'>[그림 넣기 실패]</div>")
+        elif kind == "answer":
+            for _ in range(answer_lines):
+                A("<div class='ans'></div>")
+        elif kind == "sep":
+            A("<div class='sep'></div>")
+
+    if open_q:
+        A("</div>")
+    A("</div></div>")
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".",
+                exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out))
     return n_img, n_fail
 
 
@@ -416,9 +578,15 @@ def main():
     ap.add_argument("--pdfdir", action="append", default=[],
                     help="원본 PDF 폴더. 기본은 samples/테스트자료_스캔본 등")
     ap.add_argument("--cropdir", default="./out/_crops")
+    ap.add_argument("--html", default=None,
+                    help="같은 조판을 브라우저용 HTML 로도 저장한다")
+    ap.add_argument("--html-only", action="store_true",
+                    help="DOCX 는 만들지 않고 HTML 만")
     args = ap.parse_args()
 
-    if Document is None:
+    if args.html_only and not args.html:
+        args.html = os.path.splitext(args.out)[0] + ".html"
+    if Document is None and not args.html_only:
         sys.exit("python-docx 가 없습니다.  pip install python-docx pymupdf")
     if fitz is None:
         print("경고: pymupdf 가 없어 수식·그림을 넣을 수 없습니다.")
@@ -458,10 +626,20 @@ def main():
     body_widths = learn_body_width(all_rows)
     cropper = Cropper(pdf_dirs, args.cropdir, body_widths)
 
-    n_img, n_fail = build(problems, page_widths, cropper, args.out,
-                          args.title, args.answer_lines)
+    if args.html_only:
+        n_img, n_fail = 0, 0
+    else:
+        n_img, n_fail = build(problems, page_widths, cropper, args.out,
+                              args.title, args.answer_lines)
+        print(f"완료: {args.out}")
 
-    print(f"완료: {args.out}")
+    if args.html:
+        h_img, h_fail = build_html(problems, page_widths, cropper, args.html,
+                                   args.title, args.answer_lines)
+        print(f"완료: {args.html}  (브라우저로 열면 된다)")
+        if args.html_only:
+            n_img, n_fail = h_img, h_fail
+
     print(f"문제 {len(problems)}개 / 오려낸 그림 {n_img}장 / 실패 {n_fail}건")
     if cropper.fail:
         print("실패 사유:", ", ".join(f"{k} {v}" for k, v in
