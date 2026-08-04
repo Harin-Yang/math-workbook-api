@@ -2,11 +2,13 @@
 # run_docx.sh - 추출한 문제를 좌우 2단 워드 문서로 만든다. Mathpix 호출 없음 = 무료.
 #
 # 사용법:
-#   bash scripts/run_docx.sh <run폴더필터> [제목] [답쓸빈줄수]
+#   bash scripts/run_docx.sh <run폴더필터> [제목]
 #
 # 예:
-#   bash scripts/run_docx.sh "기하" "기하 문제집" 3
-#   bash scripts/run_docx.sh "확률과통계" "확률과 통계 문제집" 5
+#   bash scripts/run_docx.sh "기하" "기하 문제집"
+#   bash scripts/run_docx.sh "확률과통계" "확률과 통계 문제집"
+#
+# DOCX 와 함께 같은 조판의 HTML 미리보기도 만든다. 브라우저로 바로 볼 수 있다.
 set -u
 WORKDIR="$HOME/mathocr"
 cd "$WORKDIR" || exit 1
@@ -15,20 +17,20 @@ source venv/bin/activate
 
 FILTER="${1:-}"
 TITLE="${2:-추출 문제집}"
-LINES="${3:-3}"
 
 if [ -z "$FILTER" ]; then
   echo "run 폴더 필터가 필요합니다."
   echo "  bash scripts/run_grade.sh --list        # 폴더 이름 확인"
-  echo "  bash scripts/run_docx.sh <필터> [제목] [답쓸빈줄수]"
+  echo "  bash scripts/run_docx.sh <필터> [제목]"
   exit 1
 fi
 
 NAME="$(echo "$TITLE" | tr ' ' '_')"
 OUT="out/${NAME}.docx"
+PREVIEW="out/${NAME}.html"
 mkdir -p out
 
-ARGS=(--out "$OUT" --title "$TITLE" --answer-lines "$LINES")
+ARGS=(--out "$OUT" --title "$TITLE" --html "$PREVIEW")
 
 OLDIFS="$IFS"
 IFS=','
@@ -46,3 +48,7 @@ echo " 내 PC 로 받아가려면 PowerShell 에서 아래 한 줄을 실행하�
 echo "================================================================"
 echo
 echo "scp root@158.247.240.59:'~/mathocr/$OUT' \$env:USERPROFILE\\Downloads\\"
+echo
+echo " 브라우저로 먼저 보려면 (미리보기 HTML)"
+echo
+echo "scp root@158.247.240.59:'~/mathocr/$PREVIEW' \$env:USERPROFILE\\Downloads\\"

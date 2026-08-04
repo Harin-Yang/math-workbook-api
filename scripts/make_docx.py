@@ -5,15 +5,19 @@ make_docx.py
 
 사용법:
     python3 scripts/make_docx.py --file 기하 --out out/기하.docx
-    python3 scripts/make_docx.py --file 확률과통계 --out out/확통.docx --answer-lines 5
+    python3 scripts/make_docx.py --file 확률과통계 --out out/확통.docx --html out/확통.html
 
 수식을 어떻게 넣는가
-    지금은 '원본 페이지에서 그 자리를 오려낸 그림' 으로 넣는다.
-    Mathpix 가 모든 줄의 좌표를 주므로 원본 PDF 의 그 사각형만 그려내면 된다.
+    Mathpix 가 준 LaTeX 를 워드 수식(OMML)으로 옮겨 넣는다. 한/글에서 편집된다.
+    변환은 latex2omml.py 가 한다. 외부 패키지도 재호출도 없다.
 
-    대신 그 줄은 편집할 수 없다. 수식을 한/글에서 고칠 수 있어야 하면
-    LaTeX -> OMML 변환기를 붙여야 하는데, 그건 조판이 통과된 뒤에 한다.
-    수식이 없는 줄은 진짜 글자로 들어가므로 편집된다.
+    옮길 수 없는 문법을 만난 줄만 '원본에서 그 자리를 오려낸 그림' 으로 되돌린다.
+    틀린 수식을 내보내느니 그림이 낫다.
+
+줄을 어떻게 잇는가
+    원본은 한 쪽을 두 단으로 짜 놓아 문장이 중간에서 끊긴다.
+    그 끊김을 그대로 옮기면 우리 단 너비와 안 맞아 문장이 엉뚱한 데서 잘린다.
+    Mathpix 가 줄마다 알려 주는 이어짐 표시로 문장을 다시 붙인다. (merge_lines)
 
 크기를 어떻게 맞추는가
     오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쎄날쎄해진다.
@@ -55,6 +59,13 @@ except ImportError:
 # 수식이 들어 있는 줄인지
 HAS_MATH = re.compile(r"\\\(|\\\[|\$|\\begin\{|\\frac|\\sqrt|\\overline|"
                       r"\\mathrm|\\vec|\\overrightarrow|\\angle|\\triangle")
+
+# 이어지는 줄이 조사 한 글자로 시작하면 앞 낱말에 붙여야 한다.
+# Mathpix 가 '변화' + '를 보이는' 을 띄어 이으라고 알려 주는 일이 있다.
+# 조사 뒤에 공백이나 문장부호가 오는 경우만 잡는다. (한 글자 낱말 오인 방지)
+JOSA_HEAD = re.compile(
+    r"^(을|를|이|가|은|는|의|에|와|과|도|만|로|라|며|고|서|나|든)"
+    r"(?=[\s,.)\]。，]|$)")
 
 PAD = 6            # 오려낼 때 사방으로 남길 여백 (픽셀)
 A4_W_MM = 210
@@ -251,23 +262,6 @@ def set_two_columns(section, gap_mm=GAP_MM):
     cols.set(qn("w:equalWidth"), "1")
 
 
-def set_border(p, edge="bottom", size=6, color="BBBBBB"):
-    """문단에 선을 하나 긋는다. 문제 사이를 눈으로 가르는 용도."""
-    pPr = p._p.get_or_add_pPr()
-    found = pPr.xpath("./w:pBdr")
-    if found:
-        bdr = found[0]
-    else:
-        bdr = pPr.makeelement(qn("w:pBdr"), {})
-        pPr.append(bdr)
-    el = bdr.makeelement(qn(f"w:{edge}"), {})
-    el.set(qn("w:val"), "single")
-    el.set(qn("w:sz"), str(size))
-    el.set(qn("w:space"), "2")
-    el.set(qn("w:color"), color)
-    bdr.append(el)
-
-
 def add_label(doc, text):
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(10)
@@ -319,17 +313,6 @@ def add_rich(doc, parts, keep=True):
     return p
 
 
-def add_answer_space(doc, lines):
-    """답 쓸 자리. 빈 여백이면 어디 쓰는지 모르므로 얙은 밑줄을 깔다."""
-    for k in range(lines):
-        p = doc.add_paragraph()
-        p.paragraph_format.space_before = Pt(4)
-        p.paragraph_format.space_after = Pt(0)
-        p.paragraph_format.keep_with_next = (k < lines - 1)
-        p.add_run(" ").font.size = Pt(10)
-        set_border(p, "bottom", 4, "DDDDDD")
-
-
 def to_rich(text):
     """수식이 든 줄을 [글자 / 워드수식 / 브라우저수식] 조각으로 옮긴다.
 
@@ -352,6 +335,37 @@ def to_rich(text):
     return out or None
 
 
+def merge_lines(body):
+    """원본 쪽에서 끊긴 줄을 문장 단위로 이어 붙인다.
+
+    원본은 한 쪽에 두 단으로 짜여 있어 문장이 중간에서 끊긴다.
+    그 끊김을 그대로 옮기면 우리 단 너비와 안 맞아 문장이 엉뚱한 데서 잘린다.
+
+    Mathpix 가 줄마다 어떻게 끊겼는지 알려 준다.
+        continues_line_space     앞줄에 이어짐 — 사이에 띄어쓰기
+        continues_line_no_space  앞줄에 이어짐 — 붙여 씀
+        continues_line_newline   진짜 줄바꿈 — 소문항 (1) (2) 같은 것
+    앞의 둘만 이어 붙이고 나머지는 문단을 나눈다.
+
+    반환: [{"lines": [줄...], "text": 이어붙인 글자} | {"fig": 줄}]
+    """
+    GLUE = {"continues_line_space": " ", "continues_line_no_space": ""}
+    out = []
+    for b in body:
+        t = EX.txt(b)
+        is_fig = b.get("type") in EX.FIGURE_TYPES or EX.is_image_md(t)
+        glue = GLUE.get(b.get("subtype") or "")
+        if (not is_fig and glue is not None and out
+                and "text" in out[-1]):
+            if glue and JOSA_HEAD.match(t):
+                glue = ""      # '변화' + '를 보이는' -> '변화를 보이는'
+            out[-1]["text"] = (out[-1]["text"] + glue + t).strip()
+            out[-1]["lines"].append(b)
+            continue
+        out.append({"fig": b} if is_fig else {"lines": [b], "text": t})
+    return out
+
+
 def iter_blocks(problems, page_widths, cropper):
     """문제들을 조판 조각으로 풀어 낸다.
 
@@ -364,7 +378,6 @@ def iter_blocks(problems, page_widths, cropper):
         ("text",  글줄, 다음과 붙일지)
         ("image", PNG 경로, 폭mm, 다음과 붙일지)
         ("imgfail",)
-        ("answer",)
         ("sep",)
     """
     cur_file = None
@@ -381,14 +394,14 @@ def iter_blocks(problems, page_widths, cropper):
             if f not in body:
                 body.append(f)
 
-        for k, b in enumerate(body):
-            last = (k == len(body) - 1)
-            t = EX.txt(b)
-            typ = b.get("type")
-            iw = page_widths.get((b.get("_file"), b.get("_page")))
+        units = merge_lines(body)
+        for k, u in enumerate(units):
+            last = (k == len(units) - 1)
 
             # 진짜 그림은 오려낸다
-            if typ in EX.FIGURE_TYPES or EX.is_image_md(t):
+            if "fig" in u:
+                b = u["fig"]
+                iw = page_widths.get((b.get("_file"), b.get("_page")))
                 got = cropper.crop(b, iw)
                 if got:
                     yield ("image", got[0], got[1], not last)
@@ -396,37 +409,41 @@ def iter_blocks(problems, page_widths, cropper):
                     yield ("imgfail",)
                 continue
 
-            # 수식이 든 줄은 LaTeX 를 워드 수식으로 옮긴다.
-            # 못 옮기는 줄만 예전처럼 그림으로 되돌린다.
-            if t and (HAS_MATH.search(t) or EX.is_display_math(b)):
-                parts = to_rich(t)
-                if parts:
-                    yield ("rich", parts, not last)
-                    continue
-                got = cropper.crop(b, iw)
-                if got:
-                    yield ("image", got[0], got[1], not last)
-                else:
-                    yield ("imgfail",)
-                    yield ("text", t, not last)
-                continue
-
-            if not t:
-                continue
-            if k == 0:
+            t = u["text"]
+            if k == 0 and t:
                 for _name, pat, _kind in EX.START_PATTERNS:
                     m = pat.match(t)
                     if m:
                         t = t[m.end():].strip()
                         break
-                if not t:
+
+            has_math = t and (HAS_MATH.search(t)
+                              or any(EX.is_display_math(b)
+                                     for b in u["lines"]))
+            if has_math:
+                # LaTeX 를 워드 수식으로 옮긴다.
+                # 못 옮기면 그 줄만 예전처럼 그림으로 되돌린다.
+                parts = to_rich(t)
+                if parts:
+                    yield ("rich", parts, not last)
                     continue
+                for b in u["lines"]:
+                    iw = page_widths.get((b.get("_file"), b.get("_page")))
+                    got = cropper.crop(b, iw)
+                    if got:
+                        yield ("image", got[0], got[1], not last)
+                    else:
+                        yield ("imgfail",)
+                        if EX.txt(b):
+                            yield ("text", EX.txt(b), not last)
+                continue
+
+            if not t:
+                continue
             yield ("text", t, not last)
 
-        yield ("answer",)
 
-
-def build(problems, page_widths, cropper, out_path, title, answer_lines):
+def build(problems, page_widths, cropper, out_path, title):
     doc = Document()
 
     sec = doc.sections[0]
@@ -472,8 +489,6 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
             n_img += 1
         elif kind == "imgfail":
             n_fail += 1
-        elif kind == "answer":
-            add_answer_space(doc, answer_lines)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".",
                 exist_ok=True)
@@ -484,7 +499,7 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
 HTML_CSS = """
 :root{
   --paper:#ffffff; --ink:#16181c; --ink-soft:#5a5f68;
-  --rule:#d3cec6; --label:#2f5d8a; --answer:#ded9d1;
+  --rule:#d3cec6; --label:#2f5d8a;
   --desk:#ebe8e2; --chrome:#ffffff; --chrome-ink:#2a2d33;
   --chrome-rule:#dcd8d1;
 }
@@ -530,7 +545,6 @@ body{
         margin:10pt 0 2pt; }
 .line{ font-size:10pt; line-height:1.5; margin:0 0 2pt; }
 .line img{ display:block; max-width:100%; margin:1pt 0; }
-.ans{ border-bottom:1px solid var(--answer); height:1.5em; margin-top:4pt; }
 .miss{ font-size:9pt; color:#a8442a; }
 math{ font-size:1.02em; }
 math[display="block"]{ display:block; margin:2pt 0; }
@@ -546,7 +560,7 @@ math[display="block"]{ display:block; margin:2pt 0; }
 """
 
 
-def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
+def build_html(problems, page_widths, cropper, out_path, title):
     """DOCX 와 같은 조각으로 브라우저 미리보기를 만든다.
 
     그림은 base64 로 파일 안에 박는다. 이 파일 하나만 열면 다 보인다.
@@ -601,9 +615,6 @@ def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
         elif kind == "imgfail":
             n_fail += 1
             A("<div class='miss'>[그림 넣기 실패]</div>")
-        elif kind == "answer":
-            for _ in range(answer_lines):
-                A("<div class='ans'></div>")
 
     if open_q:
         A("</div>")
@@ -623,8 +634,6 @@ def main():
                     help="run 폴더 이름에 포함될 조각. 여러 번 줄 수 있다")
     ap.add_argument("--out", default="./out/문제집.docx")
     ap.add_argument("--title", default="추출 문제집")
-    ap.add_argument("--answer-lines", type=int, default=3,
-                    help="문제마다 답 쓸 빈 줄 수")
     ap.add_argument("--pdfdir", action="append", default=[],
                     help="원본 PDF 폴더. 기본은 samples/테스트자료_스캔본 등")
     ap.add_argument("--cropdir", default="./out/_crops")
@@ -680,12 +689,12 @@ def main():
         n_img, n_fail, n_math = 0, 0, 0
     else:
         n_img, n_fail, n_math = build(problems, page_widths, cropper,
-                                      args.out, args.title, args.answer_lines)
+                                      args.out, args.title)
         print(f"완료: {args.out}")
 
     if args.html:
         h = build_html(problems, page_widths, cropper, args.html,
-                       args.title, args.answer_lines)
+                       args.title)
         print(f"완료: {args.html}  (브라우저로 열면 된다)")
         if args.html_only:
             n_img, n_fail, n_math = h
