@@ -20,8 +20,8 @@ make_docx.py
     Mathpix 가 줄마다 알려 주는 이어짐 표시로 문장을 다시 붙인다. (merge_lines)
 
 크기를 어떻게 맞추는가
-    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쌀날쌀해진다.
-    파일마다 '본문 한 줄이 껴 찹을 때의 폭' 을 배워 그걸 칼럼 폭에 맞춘다.
+    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 제각각이 된다.
+    파일마다 '본문 한 줄이 꿉 찰 때의 폭' 을 배워 그걸 칼럼 폭에 맞춘다.
     원본에서의 상대 크기가 그대로 유지된다.
 
 필요한 것
@@ -100,11 +100,11 @@ def find_source_pdf(pdf_dirs, run_name):
 
 
 def learn_body_width(rows):
-    """파일마다 '본문 한 줄이 껴 찹을 때의 픽셀 폭' 을 배운다.
+    """파일마다 '본문 한 줄이 꿉 찰 때의 픽셀 폭' 을 배운다.
 
-    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쌀날쌀해진다.
+    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 제각각이 된다.
     본문 폭을 칼럼 폭에 맞춰 두면 원본에서의 상대 크기가 그대로 유지된다.
-    (원본에서 한 줄을 껴 채우던 것은 칼럼도 껴 채우고, 절반짜리는 절반)
+    (원본에서 한 줄을 꿉 채우던 것은 칼럼도 꿉 채우고, 절반짜리는 절반)
 
     큰 그림이 폭을 부풀리지 않게 위쪽 10% 는 버리고 그 다음 값을 쓴다.
     """
@@ -246,7 +246,7 @@ class Cropper:
 
         # 크기 환산.
         # 본문 폭을 배웠으면 그걸 칼럼 폭에 맞춘다. 원본에서의 상대 크기가 유지된다.
-        # 못 배워으면 원본의 실제 물리 크기(점 -> mm)로 넣는다.
+        # 못 배웠으면 원본의 실제 물리 크기(점 -> mm)로 넣는다.
         body = self.body_widths.get(ln.get("_file"))
         if body:
             mm = (x1 - x0) / body * col_width_mm()
@@ -350,7 +350,7 @@ def merge_lines(body):
 
     Mathpix 가 줄마다 어떻게 끊겼는지 알려 준다.
         continues_line_space     앞줄에 이어짐 — 사이에 띄어쓰기
-        continues_line_no_space  앞줄에 이어짐 — 붙여 씁
+        continues_line_no_space  앞줄에 이어짐 — 붙여 쓀
         continues_line_newline   진짜 줄바꿈 — 소문항 (1) (2) 같은 것
     앞의 둘만 이어 붙이고 나머지는 문단을 나눈다.
 
@@ -603,7 +603,7 @@ def build_html(problems, page_widths, cropper, out_path, title):
     A("<div class='bar'><b>" + html.escape(title) + "</b>")
     A(f"<span class='n'>문제 {len(problems)}개</span>")
     A("<span class='hint'>DOCX 와 같은 조판 코드로 그린 것이다. "
-      "Ctrl+P 로 쪽 나뉩까지 볼 수 있다.</span></div>")
+      "Ctrl+P 로 쪽 나늄기까지 볼 수 있다.</span></div>")
     A("<div class='sheet'>")
     A(f"<div class='title'>{html.escape(title)}</div><div class='cols'>")
 
