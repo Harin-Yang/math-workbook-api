@@ -153,14 +153,14 @@ class Parser:
             kind, val = self.peek()
             if kind == "close":
                 if stop_close:
-                    return nodes
+                    return _clean(nodes)
                 raise Unsupported("짝이 안 맞는 }")
             atom = self.atom()
             if atom is None:
                 continue
             atom = self.scripts(atom)
             nodes.append(atom)
-        return nodes
+        return _clean(nodes)
 
     def group(self):
         """{ ... } 하나를 읽는다. 없으면 원자 하나."""
@@ -206,6 +206,11 @@ class Parser:
             return {"k": "row", "e": self.group()}
 
         if kind == "ch":
+            # OCR 이 평행 기호 ∥ 를 빗금 두 개로 읽는다. 교재에 나온 22곳이 전부
+            # 평행이고 '두 번 나누기' 로 쓴 곳은 하나도 없어서 되돌려 놓는다.
+            if val == "/" and self.peek() == ("ch", "/"):
+                self.next()
+                return {"k": "run", "t": "∥", "sty": "p"}
             return {"k": "run", "t": val, "sty": "i" if val.isalpha() else "p"}
 
         if kind == "amp":
@@ -300,7 +305,7 @@ class Parser:
                 k2, v2 = self.next()
                 closer = DELIM_CHAR.get(v2, v2)
                 return {"k": "delim", "open": opener, "close": closer,
-                        "e": inner}
+                        "e": _clean(inner)}
             if kind == "cmd" and val == "\\right":
                 depth -= 1
             a = self.atom()
@@ -312,6 +317,69 @@ def parse(latex):
     return Parser(tokenize(latex)).parse()
 
 
+# ── 빈 칸을 없애는 뒷정리 ─────────────────────────────────────────────
+#
+# 워드·한/글은 수식의 빈 칸을 '네모 상자' 로 그린다.
+# ₄P₂ 같은 앞첨자를 Mathpix 는 `{ }_{4} \mathrm{P}_{2}` 로 준다.
+# 이걸 그대로 옮기면 밑이 빈 첨자가 되어 문장 맨 앞에 상자가 붙는다.
+# 그래서 앞첨자 전용 구조(m:sPre)로 접어 넣고, 빈 칸은 아예 만들지 않는다.
+
+# 남는 칸을 이걸로 메워 상자를 막는다. 눈에 안 보이는 글자라 escape 로 적는다.
+ZWSP = "​"
+
+
+def _is_hole(n):
+    """밑이 빈 첨자인가. `{ }_{4}` 가 이렇게 들어온다."""
+    if n.get("k") not in ("sub", "sup", "subsup"):
+        return False
+    b = n.get("base") or []
+    return len(b) == 1 and b[0].get("k") == "row" and not b[0].get("e")
+
+
+def _fold_pre(nodes):
+    """밑이 빈 첨자 + 바로 뒤 글자 -> 앞첨자 한 덩어리."""
+    out, i = [], 0
+    while i < len(nodes):
+        n = nodes[i]
+        if _is_hole(n):
+            if i + 1 >= len(nodes):
+                raise Unsupported("앞첨자 뒤에 올 글자가 없다")
+            out.append({"k": "pre", "base": [nodes[i + 1]],
+                        "sub": n.get("sub"), "sup": n.get("sup")})
+            i += 2
+            continue
+        out.append(n)
+        i += 1
+    return out
+
+
+def _fold_bars(nodes):
+    """짝지은 세로줄 |...| 을 절댓값 괄호로 접는다.
+
+    `|\\overrightarrow{AC}|` 을 낱글자 그대로 두면 뷰어에 따라
+    나눗셈 기호로 잘못 읽어 엉뚱한 기호를 찍는다. 괄호 구조로 만들어 둔다.
+    """
+    pos = [i for i, n in enumerate(nodes)
+           if n.get("k") == "run" and n.get("t") == "|"]
+    if len(pos) < 2 or len(pos) % 2:
+        return nodes
+    out, i, pairs = [], 0, dict(zip(pos[0::2], pos[1::2]))
+    while i < len(nodes):
+        if i in pairs:
+            j = pairs[i]
+            out.append({"k": "delim", "open": "|", "close": "|",
+                        "e": nodes[i + 1:j]})
+            i = j + 1
+            continue
+        out.append(nodes[i])
+        i += 1
+    return out
+
+
+def _clean(nodes):
+    return _fold_bars(_fold_pre(nodes))
+
+
 # ── OMML 내보내기 (워드용) ────────────────────────────────────────────
 def _o_run(text, sty):
     pr = ""
@@ -320,6 +388,18 @@ def _o_run(text, sty):
     elif sty == "b":
         pr = '<m:rPr><m:sty m:val="b"/></m:rPr>'
     return f"<m:r>{pr}<m:t xml:space=\"preserve\">{escape(text)}</m:t></m:r>"
+
+
+def _oq(nodes, sty, what):
+    """수식의 한 칸을 채운다. 비면 Unsupported.
+
+    빈 칸을 그대로 내보내면 워드·한/글이 그 자리에 네모 상자를 그린다.
+    그 상자가 글머리기호처럼 문장 앞에 붙어 보인다. 비느니 그림으로 되돌린다.
+    """
+    s = _o(nodes or [], sty)
+    if not s:
+        raise Unsupported(f"빈 {what}")
+    return s
 
 
 def _o(nodes, sty=None):
@@ -334,43 +414,52 @@ def _o(nodes, sty=None):
             out.append(_o(n["e"], n["sty"]))
         elif k == "frac":
             out.append(f"<m:f><m:fPr><m:ctrlPr/></m:fPr>"
-                       f"<m:num>{_o(n['n'], sty)}</m:num>"
-                       f"<m:den>{_o(n['d'], sty)}</m:den></m:f>")
+                       f"<m:num>{_oq(n['n'], sty, '분자')}</m:num>"
+                       f"<m:den>{_oq(n['d'], sty, '분모')}</m:den></m:f>")
         elif k == "rad":
             if n["deg"]:
                 out.append(f"<m:rad><m:radPr><m:ctrlPr/></m:radPr>"
-                           f"<m:deg>{_o(n['deg'], sty)}</m:deg>"
-                           f"<m:e>{_o(n['e'], sty)}</m:e></m:rad>")
+                           f"<m:deg>{_oq(n['deg'], sty, '근호 지수')}</m:deg>"
+                           f"<m:e>{_oq(n['e'], sty, '근호 안')}</m:e></m:rad>")
             else:
                 out.append(f'<m:rad><m:radPr><m:degHide m:val="1"/>'
                            f"<m:ctrlPr/></m:radPr><m:deg/>"
-                           f"<m:e>{_o(n['e'], sty)}</m:e></m:rad>")
+                           f"<m:e>{_oq(n['e'], sty, '근호 안')}</m:e></m:rad>")
         elif k == "sup":
             out.append(f"<m:sSup><m:sSupPr><m:ctrlPr/></m:sSupPr>"
-                       f"<m:e>{_o(n['base'], sty)}</m:e>"
-                       f"<m:sup>{_o(n['sup'], sty)}</m:sup></m:sSup>")
+                       f"<m:e>{_oq(n['base'], sty, '밑')}</m:e>"
+                       f"<m:sup>{_oq(n['sup'], sty, '윗첨자')}</m:sup></m:sSup>")
         elif k == "sub":
             out.append(f"<m:sSub><m:sSubPr><m:ctrlPr/></m:sSubPr>"
-                       f"<m:e>{_o(n['base'], sty)}</m:e>"
-                       f"<m:sub>{_o(n['sub'], sty)}</m:sub></m:sSub>")
+                       f"<m:e>{_oq(n['base'], sty, '밑')}</m:e>"
+                       f"<m:sub>{_oq(n['sub'], sty, '아래첨자')}</m:sub></m:sSub>")
         elif k == "subsup":
             out.append(f"<m:sSubSup><m:sSubSupPr><m:ctrlPr/></m:sSubSupPr>"
-                       f"<m:e>{_o(n['base'], sty)}</m:e>"
-                       f"<m:sub>{_o(n['sub'], sty)}</m:sub>"
-                       f"<m:sup>{_o(n['sup'], sty)}</m:sup></m:sSubSup>")
+                       f"<m:e>{_oq(n['base'], sty, '밑')}</m:e>"
+                       f"<m:sub>{_oq(n['sub'], sty, '아래첨자')}</m:sub>"
+                       f"<m:sup>{_oq(n['sup'], sty, '윗첨자')}</m:sup>"
+                       f"</m:sSubSup>")
+        elif k == "pre":
+            # 앞첨자 ₄P₂. 안 쓰는 칸은 보이지 않는 글자로 메워 상자를 막는다.
+            sb = _o(n["sub"], sty) if n.get("sub") else _o_run(ZWSP, "p")
+            sp = _o(n["sup"], sty) if n.get("sup") else _o_run(ZWSP, "p")
+            out.append(f"<m:sPre><m:sPrePr><m:ctrlPr/></m:sPrePr>"
+                       f"<m:sub>{sb}</m:sub><m:sup>{sp}</m:sup>"
+                       f"<m:e>{_oq(n['base'], sty, '앞첨자의 밑')}</m:e>"
+                       f"</m:sPre>")
         elif k == "acc":
             out.append(f'<m:acc><m:accPr><m:chr m:val="{escape(n["chr"])}"/>'
                        f"<m:ctrlPr/></m:accPr>"
-                       f"<m:e>{_o(n['e'], sty)}</m:e></m:acc>")
+                       f"<m:e>{_oq(n['e'], sty, '기호 밑')}</m:e></m:acc>")
         elif k == "bar":
             out.append(f'<m:bar><m:barPr><m:pos m:val="{n["pos"]}"/>'
                        f"<m:ctrlPr/></m:barPr>"
-                       f"<m:e>{_o(n['e'], sty)}</m:e></m:bar>")
+                       f"<m:e>{_oq(n['e'], sty, '줄 안')}</m:e></m:bar>")
         elif k == "delim":
             out.append(f'<m:d><m:dPr><m:begChr m:val="{escape(n["open"])}"/>'
                        f'<m:endChr m:val="{escape(n["close"])}"/>'
                        f"<m:ctrlPr/></m:dPr>"
-                       f"<m:e>{_o(n['e'], sty)}</m:e></m:d>")
+                       f"<m:e>{_oq(n['e'], sty, '괄호 안')}</m:e></m:d>")
         else:
             raise Unsupported(f"내보낼 수 없는 조각: {k}")
     return "".join(out)
@@ -426,6 +515,13 @@ def _m(nodes, sty=None):
             out.append(f"<msubsup><mrow>{_m(n['base'], sty)}</mrow>"
                        f"<mrow>{_m(n['sub'], sty)}</mrow>"
                        f"<mrow>{_m(n['sup'], sty)}</mrow></msubsup>")
+        elif k == "pre":
+            sb = f"<mrow>{_m(n['sub'], sty)}</mrow>" if n.get("sub") \
+                else "<none/>"
+            sp = f"<mrow>{_m(n['sup'], sty)}</mrow>" if n.get("sup") \
+                else "<none/>"
+            out.append(f"<mmultiscripts><mrow>{_m(n['base'], sty)}</mrow>"
+                       f"<mprescripts/>{sb}{sp}</mmultiscripts>")
         elif k == "acc":
             out.append(f"<mover accent='true'><mrow>{_m(n['e'], sty)}</mrow>"
                        f"<mo>{escape(n['chr'])}</mo></mover>")
@@ -497,6 +593,10 @@ CASES = [
     r"x_{1}^{2}",
     r"\triangle \mathrm{ABH} \equiv \triangle \mathrm{ACH}",
     r"\frac{\sqrt{3}}{2} \pi",
+    r"{ }_{5} \mathrm{P}_{2}",
+    r"{ }_{n} \Pi_{r}",
+    r"n(S)={ }_{7} \mathrm{C}_{3}=35",
+    r"|\overrightarrow{\mathrm{AC}}|",
 ]
 
 
