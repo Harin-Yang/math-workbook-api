@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""
+latex2omml.py
+Mathpix 가 준 LaTeX 를 워드 수식(OMML)으로 옮긴다. 외부 패키지 없음, 비용 0원.
+
+왜 필요한가
+    워드 문서에서 수식은 OMML 이라는 전용 형식이어야 편집된다.
+    LaTeX 글자를 그냥 넣으면 \\frac{1}{2} 라는 글씨가 그대로 찍힌다.
+    python-docx 에는 변환 기능이 없어서 예전에는 수식을 그림으로 박았다.
+
+무엇을 옮기는가
+    교재에 실제로 나온 문법만 옮긴다. 세어 보니 스무 개 남짓으로 닫혀 있었다.
+    분수 / 근호 / 위아래 첨자 / 벡터·화살표 / 윗줄 / 괄호 / 그리스 문자 / 기호.
+
+    모르는 문법을 만나면 Unsupported 를 던진다.
+    부르는 쪽이 그 줄만 예전처럼 그림으로 박으면 된다. 절대 틀린 수식을 내보내지 않는다.
+
+같은 나무에서 두 가지를 뽑는다
+    to_omml()    워드용
+    to_mathml()  브라우저 미리보기용 (요즘 브라우저는 MathML 을 그대로 그린다)
+    한 벌로 만들어야 미리보기와 DOCX 가 어긋나지 않는다.
+
+시험:
+    python3 scripts/latex2omml.py --selftest
+"""
+
+import re
+import sys
+from xml.sax.saxutils import escape
+
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+class Unsupported(Exception):
+    """옮길 수 없는 문법. 부르는 쪽에서 그림으로 되돌린다."""
+
+
+# ── 기호표 ───────────────────────────────────────────────────────────
+SYMBOL = {
+    # 그리스
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε",
+    "varepsilon": "ε", "zeta": "ζ", "eta": "η", "theta": "θ",
+    "vartheta": "ϑ", "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ",
+    "nu": "ν", "xi": "ξ", "pi": "π", "rho": "ρ", "sigma": "σ", "tau": "τ",
+    "upsilon": "υ", "phi": "φ", "varphi": "φ", "chi": "χ", "psi": "ψ",
+    "omega": "ω",
+    "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ", "Xi": "Ξ",
+    "Pi": "Π", "Sigma": "Σ", "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+    # 연산·관계
+    "times": "×", "div": "÷", "pm": "±", "mp": "∓", "cdot": "·",
+    "neq": "≠", "ne": "≠", "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥",
+    "ll": "≪", "gg": "≫", "approx": "≈", "sim": "∼", "simeq": "≃",
+    "equiv": "≡", "cong": "≅", "propto": "∝",
+    # 집합·논리
+    "cap": "∩", "cup": "∪", "subset": "⊂", "subseteq": "⊆",
+    "supset": "⊃", "supseteq": "⊇", "in": "∈", "notin": "∉",
+    "emptyset": "∅", "varnothing": "∅", "mid": "∣", "setminus": "∖",
+    "complement": "∁",
+    # 도형·기하
+    "angle": "∠", "triangle": "△", "square": "□", "perp": "⊥",
+    "parallel": "∥", "circ": "∘", "prime": "′", "degree": "°",
+    # 화살표
+    "rightarrow": "→", "to": "→", "leftarrow": "←",
+    "leftrightarrow": "↔", "Rightarrow": "⇒", "Leftarrow": "⇐",
+    "Leftrightarrow": "⇔", "longrightarrow": "⟶",
+    # 점·기타
+    "cdots": "⋯", "ldots": "…", "dots": "…", "vdots": "⋮", "ddots": "⋱",
+    "infty": "∞", "partial": "∂", "nabla": "∇", "forall": "∀",
+    "exists": "∃", "neg": "¬", "therefore": "∴", "because": "∵",
+    "sum": "∑", "prod": "∏", "int": "∫", "oint": "∮",
+    "lim": "lim", "log": "log", "ln": "ln", "exp": "exp",
+    "min": "min", "max": "max", "gcd": "gcd",
+    "sin": "sin", "cos": "cos", "tan": "tan",
+    "sec": "sec", "csc": "csc", "cot": "cot",
+    "arcsin": "arcsin", "arccos": "arccos", "arctan": "arctan",
+    "sinh": "sinh", "cosh": "cosh", "tanh": "tanh",
+    "P": "P", "C": "C", "H": "H",
+}
+
+# 로만체(똑바로 선 글씨)로 찍어야 하는 것 — 함수 이름들
+ROMAN_WORDS = {
+    "lim", "log", "ln", "exp", "min", "max", "gcd",
+    "sin", "cos", "tan", "sec", "csc", "cot",
+    "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+}
+
+# 공백류
+SPACES = {"quad": " ", "qquad": "  ", ",": " ", ";": " ", ":": " ",
+          "!": "", " ": " ", "thinspace": " ", "enspace": " "}
+
+# 액센트 (윗기호)
+ACCENT = {
+    "vec": "⃗", "overrightarrow": "⃗", "overleftarrow": "⃖",
+    "hat": "̂", "widehat": "̂", "tilde": "̃", "widetilde": "̃",
+    "dot": "̇", "ddot": "̈",
+}
+
+OPEN_CLOSE = {
+    "(": ")", "[": "]", "\\{": "\\}", "|": "|", "\\|": "\\|",
+    "\\langle": "\\rangle", ".": ".",
+}
+
+DELIM_CHAR = {
+    "\\{": "{", "\\}": "}", "\\langle": "⟨", "\\rangle": "⟩",
+    "\\|": "‖", "\\lfloor": "⌊", "\\rfloor": "⌋",
+    "\\lceil": "⌈", "\\rceil": "⌉", ".": "",
+}
+
+TOKEN = re.compile(r"""
+    (?P<cmd>\\[a-zA-Z]+)
+  | (?P<esc>\\[^a-zA-Z])
+  | (?P<open>\{)
+  | (?P<close>\})
+  | (?P<sup>\^)
+  | (?P<sub>_)
+  | (?P<amp>&)
+  | (?P<sp>\s+)
+  | (?P<ch>[^\\{}\^_&\s])
+""", re.X)
+
+
+def tokenize(s):
+    out, i = [], 0
+    while i < len(s):
+        m = TOKEN.match(s, i)
+        if not m:
+            raise Unsupported(f"읽을 수 없는 글자: {s[i]!r}")
+        i = m.end()
+        kind = m.lastgroup
+        if kind == "sp":
+            continue
+        out.append((kind, m.group()))
+    return out
+
+
+# ── 파서 ─────────────────────────────────────────────────────────────
+class Parser:
+    def __init__(self, toks):
+        self.t = toks
+        self.i = 0
+
+    def peek(self):
+        return self.t[self.i] if self.i < len(self.t) else (None, None)
+
+    def next(self):
+        v = self.peek()
+        self.i += 1
+        return v
+
+    def parse(self, stop_close=False):
+        nodes = []
+        while self.i < len(self.t):
+            kind, val = self.peek()
+            if kind == "close":
+                if stop_close:
+                    return nodes
+                raise Unsupported("짝이 안 맞는 }")
+            atom = self.atom()
+            if atom is None:
+                continue
+            atom = self.scripts(atom)
+            nodes.append(atom)
+        return nodes
+
+    def group(self):
+        """{ ... } 하나를 읽는다. 없으면 원자 하나."""
+        kind, val = self.peek()
+        if kind == "open":
+            self.next()
+            inner = self.parse(stop_close=True)
+            k2, _ = self.next()
+            if k2 != "close":
+                raise Unsupported("} 가 없다")
+            return inner
+        a = self.atom()
+        if a is None:
+            raise Unsupported("인자가 없다")
+        return [a]
+
+    def scripts(self, base):
+        """원자 뒤의 ^ _ 를 붙인다."""
+        sup = sub = None
+        while True:
+            kind, val = self.peek()
+            if kind == "sup" and sup is None:
+                self.next()
+                sup = self.group()
+            elif kind == "sub" and sub is None:
+                self.next()
+                sub = self.group()
+            else:
+                break
+        if sup is not None and sub is not None:
+            return {"k": "subsup", "base": [base], "sub": sub, "sup": sup}
+        if sup is not None:
+            return {"k": "sup", "base": [base], "sup": sup}
+        if sub is not None:
+            return {"k": "sub", "base": [base], "sub": sub}
+        return base
+
+    def atom(self):
+        kind, val = self.next()
+
+        if kind == "open":
+            self.i -= 1
+            return {"k": "row", "e": self.group()}
+
+        if kind == "ch":
+            return {"k": "run", "t": val, "sty": "i" if val.isalpha() else "p"}
+
+        if kind == "amp":
+            raise Unsupported("표 형식(&)")
+
+        if kind == "esc":
+            c = val[1]
+            if c in "{}%$#_&":
+                return {"k": "run", "t": c, "sty": "p"}
+            if c == "\\":
+                raise Unsupported("줄바꿈(\\\\)")
+            if c in SPACES:
+                return {"k": "run", "t": SPACES[c], "sty": "p"}
+            raise Unsupported(f"모르는 기호: {val}")
+
+        if kind != "cmd":
+            raise Unsupported(f"모르는 조각: {val}")
+
+        name = val[1:]
+
+        if name in ("begin", "end"):
+            raise Unsupported("여러 줄 수식 환경")
+
+        if name in SPACES:
+            return {"k": "run", "t": SPACES[name], "sty": "p"}
+
+        if name == "frac" or name == "dfrac" or name == "tfrac":
+            n = self.group()
+            d = self.group()
+            return {"k": "frac", "n": n, "d": d}
+
+        if name == "sqrt":
+            deg = None
+            # \sqrt[n]{x} 의 [n]
+            if self.peek()[1] == "[":
+                self.next()
+                deg = []
+                while self.peek()[1] != "]":
+                    if self.peek()[0] is None:
+                        raise Unsupported("] 가 없다")
+                    a = self.atom()
+                    if a is not None:
+                        deg.append(a)
+                self.next()
+            e = self.group()
+            return {"k": "rad", "deg": deg, "e": e}
+
+        if name in ACCENT:
+            return {"k": "acc", "chr": ACCENT[name], "e": self.group()}
+
+        if name in ("overline", "bar"):
+            return {"k": "bar", "pos": "top", "e": self.group()}
+
+        if name == "underline":
+            return {"k": "bar", "pos": "bot", "e": self.group()}
+
+        if name in ("mathrm", "text", "textrm", "mathsf", "operatorname",
+                    "mathbf", "mathit", "mathcal", "mathbb"):
+            inner = self.group()
+            sty = "b" if name == "mathbf" else (
+                "i" if name == "mathit" else "p")
+            return {"k": "style", "sty": sty, "e": inner}
+
+        if name in ("left", "right"):
+            return self.delim(name)
+
+        if name in SYMBOL:
+            txt = SYMBOL[name]
+            sty = "p" if (name in ROMAN_WORDS or not txt.isalpha()) else "i"
+            return {"k": "run", "t": txt, "sty": sty}
+
+        raise Unsupported(f"모르는 명령: \\{name}")
+
+    def delim(self, which):
+        if which == "right":
+            raise Unsupported("짝 없는 \\right")
+        kind, val = self.next()
+        if kind == "cmd":
+            val = "\\" + val[1:]
+        opener = DELIM_CHAR.get(val, val)
+
+        inner = []
+        depth = 0
+        while True:
+            kind, val = self.peek()
+            if kind is None:
+                raise Unsupported("\\right 가 없다")
+            if kind == "cmd" and val == "\\left":
+                depth += 1
+            if kind == "cmd" and val == "\\right" and depth == 0:
+                self.next()
+                k2, v2 = self.next()
+                closer = DELIM_CHAR.get(v2, v2)
+                return {"k": "delim", "open": opener, "close": closer,
+                        "e": inner}
+            if kind == "cmd" and val == "\\right":
+                depth -= 1
+            a = self.atom()
+            if a is not None:
+                inner.append(self.scripts(a))
+
+
+def parse(latex):
+    return Parser(tokenize(latex)).parse()
+
+
+# ── OMML 내보내기 (워드용) ────────────────────────────────────────────
+def _o_run(text, sty):
+    pr = ""
+    if sty == "p":
+        pr = '<m:rPr><m:sty m:val="p"/></m:rPr>'
+    elif sty == "b":
+        pr = '<m:rPr><m:sty m:val="b"/></m:rPr>'
+    return f"<m:r>{pr}<m:t xml:space=\"preserve\">{escape(text)}</m:t></m:r>"
+
+
+def _o(nodes, sty=None):
+    out = []
+    for n in nodes:
+        k = n["k"]
+        if k == "run":
+            out.append(_o_run(n["t"], sty or n["sty"]))
+        elif k == "row":
+            out.append(_o(n["e"], sty))
+        elif k == "style":
+            out.append(_o(n["e"], n["sty"]))
+        elif k == "frac":
+            out.append(f"<m:f><m:fPr><m:ctrlPr/></m:fPr>"
+                       f"<m:num>{_o(n['n'], sty)}</m:num>"
+                       f"<m:den>{_o(n['d'], sty)}</m:den></m:f>")
+        elif k == "rad":
+            if n["deg"]:
+                out.append(f"<m:rad><m:radPr><m:ctrlPr/></m:radPr>"
+                           f"<m:deg>{_o(n['deg'], sty)}</m:deg>"
+                           f"<m:e>{_o(n['e'], sty)}</m:e></m:rad>")
+            else:
+                out.append(f'<m:rad><m:radPr><m:degHide m:val="1"/>'
+                           f"<m:ctrlPr/></m:radPr><m:deg/>"
+                           f"<m:e>{_o(n['e'], sty)}</m:e></m:rad>")
+        elif k == "sup":
+            out.append(f"<m:sSup><m:sSupPr><m:ctrlPr/></m:sSupPr>"
+                       f"<m:e>{_o(n['base'], sty)}</m:e>"
+                       f"<m:sup>{_o(n['sup'], sty)}</m:sup></m:sSup>")
+        elif k == "sub":
+            out.append(f"<m:sSub><m:sSubPr><m:ctrlPr/></m:sSubPr>"
+                       f"<m:e>{_o(n['base'], sty)}</m:e>"
+                       f"<m:sub>{_o(n['sub'], sty)}</m:sub></m:sSub>")
+        elif k == "subsup":
+            out.append(f"<m:sSubSup><m:sSubSupPr><m:ctrlPr/></m:sSubSupPr>"
+                       f"<m:e>{_o(n['base'], sty)}</m:e>"
+                       f"<m:sub>{_o(n['sub'], sty)}</m:sub>"
+                       f"<m:sup>{_o(n['sup'], sty)}</m:sup></m:sSubSup>")
+        elif k == "acc":
+            out.append(f'<m:acc><m:accPr><m:chr m:val="{escape(n["chr"])}"/>'
+                       f"<m:ctrlPr/></m:accPr>"
+                       f"<m:e>{_o(n['e'], sty)}</m:e></m:acc>")
+        elif k == "bar":
+            out.append(f'<m:bar><m:barPr><m:pos m:val="{n["pos"]}"/>'
+                       f"<m:ctrlPr/></m:barPr>"
+                       f"<m:e>{_o(n['e'], sty)}</m:e></m:bar>")
+        elif k == "delim":
+            out.append(f'<m:d><m:dPr><m:begChr m:val="{escape(n["open"])}"/>'
+                       f'<m:endChr m:val="{escape(n["close"])}"/>'
+                       f"<m:ctrlPr/></m:dPr>"
+                       f"<m:e>{_o(n['e'], sty)}</m:e></m:d>")
+        else:
+            raise Unsupported(f"내보낼 수 없는 조각: {k}")
+    return "".join(out)
+
+
+def to_omml(latex):
+    """LaTeX -> <m:oMath> XML 조각. 못 옮기면 Unsupported."""
+    body = _o(parse(latex))
+    if not body.strip():
+        raise Unsupported("빈 수식")
+    return f'<m:oMath xmlns:m="{M_NS}">{body}</m:oMath>'
+
+
+# ── MathML 내보내기 (브라우저 미리보기용) ──────────────────────────────
+def _m(nodes, sty=None):
+    out = []
+    for n in nodes:
+        k = n["k"]
+        if k == "run":
+            s = sty or n["sty"]
+            t = escape(n["t"])
+            if not n["t"].strip():
+                out.append(f"<mspace width='.25em'></mspace>")
+            elif n["t"].isdigit():
+                out.append(f"<mn>{t}</mn>")
+            elif n["t"].isalpha():
+                if s == "p":
+                    out.append(f"<mi mathvariant='normal'>{t}</mi>")
+                else:
+                    out.append(f"<mi>{t}</mi>")
+            else:
+                out.append(f"<mo>{t}</mo>")
+        elif k == "row":
+            out.append(f"<mrow>{_m(n['e'], sty)}</mrow>")
+        elif k == "style":
+            out.append(f"<mrow>{_m(n['e'], n['sty'])}</mrow>")
+        elif k == "frac":
+            out.append(f"<mfrac><mrow>{_m(n['n'], sty)}</mrow>"
+                       f"<mrow>{_m(n['d'], sty)}</mrow></mfrac>")
+        elif k == "rad":
+            if n["deg"]:
+                out.append(f"<mroot><mrow>{_m(n['e'], sty)}</mrow>"
+                           f"<mrow>{_m(n['deg'], sty)}</mrow></mroot>")
+            else:
+                out.append(f"<msqrt>{_m(n['e'], sty)}</msqrt>")
+        elif k == "sup":
+            out.append(f"<msup><mrow>{_m(n['base'], sty)}</mrow>"
+                       f"<mrow>{_m(n['sup'], sty)}</mrow></msup>")
+        elif k == "sub":
+            out.append(f"<msub><mrow>{_m(n['base'], sty)}</mrow>"
+                       f"<mrow>{_m(n['sub'], sty)}</mrow></msub>")
+        elif k == "subsup":
+            out.append(f"<msubsup><mrow>{_m(n['base'], sty)}</mrow>"
+                       f"<mrow>{_m(n['sub'], sty)}</mrow>"
+                       f"<mrow>{_m(n['sup'], sty)}</mrow></msubsup>")
+        elif k == "acc":
+            out.append(f"<mover accent='true'><mrow>{_m(n['e'], sty)}</mrow>"
+                       f"<mo>{escape(n['chr'])}</mo></mover>")
+        elif k == "bar":
+            tag = "mover" if n["pos"] == "top" else "munder"
+            bar = "&#x00AF;" if n["pos"] == "top" else "&#x005F;"
+            out.append(f"<{tag} accent='true'><mrow>{_m(n['e'], sty)}</mrow>"
+                       f"<mo>{bar}</mo></{tag}>")
+        elif k == "delim":
+            o = escape(n["open"]) if n["open"] else ""
+            c = escape(n["close"]) if n["close"] else ""
+            out.append(f"<mrow><mo stretchy='true'>{o}</mo>"
+                       f"<mrow>{_m(n['e'], sty)}</mrow>"
+                       f"<mo stretchy='true'>{c}</mo></mrow>")
+        else:
+            raise Unsupported(f"내보낼 수 없는 조각: {k}")
+    return "".join(out)
+
+
+def to_mathml(latex, display=False):
+    body = _m(parse(latex))
+    if not body.strip():
+        raise Unsupported("빈 수식")
+    d = "block" if display else "inline"
+    return (f"<math xmlns='http://www.w3.org/1998/Math/MathML' "
+            f"display='{d}'><mrow>{body}</mrow></math>")
+
+
+# ── 줄 하나를 글자와 수식으로 가르기 ─────────────────────────────────
+SPLIT = re.compile(
+    r"\\\[(?P<disp>.*?)\\\]"
+    r"|\\\((?P<inl>.*?)\\\)"
+    r"|\$\$(?P<dd>.*?)\$\$"
+    r"|\$(?P<d>.*?)\$",
+    re.S)
+
+
+def segments(text):
+    """('t', 글자) 와 ('m', LaTeX, 큰수식인지) 로 가른다."""
+    out, pos = [], 0
+    for m in SPLIT.finditer(text):
+        if m.start() > pos:
+            out.append(("t", text[pos:m.start()]))
+        disp = m.group("disp") is not None or m.group("dd") is not None
+        body = (m.group("disp") or m.group("inl")
+                or m.group("dd") or m.group("d") or "")
+        out.append(("m", body, disp))
+        pos = m.end()
+    if pos < len(text):
+        out.append(("t", text[pos:]))
+    return out
+
+
+def has_math(text):
+    return any(s[0] == "m" for s in segments(text))
+
+
+# ── 자체 시험 ────────────────────────────────────────────────────────
+CASES = [
+    r"\frac{x^{2}}{4}+\frac{y^{2}}{9}=1",
+    r"\overline{\mathrm{PF}}=\overline{\mathrm{PH}}",
+    r"\sqrt{5}",
+    r"\overrightarrow{\mathrm{AB}}+\overrightarrow{\mathrm{BC}}",
+    r"\vec{a} \neq \vec{0}",
+    r"\left(\sqrt{5}, 0\right)",
+    r"10 \mathrm{~m} / \mathrm{s}",
+    r"\sin \theta \times \cos \theta",
+    r"\mathrm{P}(A \cap B)=\mathrm{P}(A) \mathrm{P}(B)",
+    r"x_{1}^{2}",
+    r"\triangle \mathrm{ABH} \equiv \triangle \mathrm{ACH}",
+    r"\frac{\sqrt{3}}{2} \pi",
+]
+
+
+def selftest():
+    bad = 0
+    for c in CASES:
+        try:
+            o = to_omml(c)
+            m = to_mathml(c)
+            assert o.startswith("<m:oMath") and m.startswith("<math")
+            print(f"  OK   {c[:56]}")
+        except Exception as e:
+            bad += 1
+            print(f"  실패 {c[:56]}  -> {e}")
+    print(f"\n{len(CASES) - bad}/{len(CASES)} 통과")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            try:
+                print(to_omml(line))
+            except Unsupported as e:
+                print(f"[못 옮김] {e}", file=sys.stderr)

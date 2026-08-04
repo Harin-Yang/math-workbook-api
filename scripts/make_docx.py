@@ -36,6 +36,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import extract as EX  # noqa: E402
+import latex2omml as L  # noqa: E402
 
 try:
     import fitz  # PyMuPDF
@@ -45,6 +46,7 @@ except ImportError:
 try:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import parse_xml
     from docx.oxml.ns import qn
     from docx.shared import Mm, Pt, RGBColor
 except ImportError:
@@ -302,6 +304,21 @@ def add_image(doc, path, width_mm, keep=True):
     return p
 
 
+def add_rich(doc, parts, keep=True):
+    """글자와 워드 수식이 섞인 한 줄. 수식은 한/글에서 편집된다."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.keep_with_next = keep
+    for part in parts:
+        if part[0] == "t":
+            run = p.add_run(part[1])
+            run.font.size = Pt(10)
+        else:
+            p._p.append(parse_xml(part[1]))
+    return p
+
+
 def add_answer_space(doc, lines):
     """답 쓸 자리. 빈 여백이면 어디 쓰는지 모르므로 얙은 밑줄을 깔다."""
     for k in range(lines):
@@ -313,14 +330,26 @@ def add_answer_space(doc, lines):
         set_border(p, "bottom", 4, "DDDDDD")
 
 
-def add_separator(doc):
-    """문제와 문제 사이를 가르는 선."""
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(6)
-    p.paragraph_format.space_after = Pt(0)
-    p.add_run("").font.size = Pt(2)
-    set_border(p, "bottom", 8, "999999")
-    return p
+def to_rich(text):
+    """수식이 든 줄을 [글자 / 워드수식 / 브라우저수식] 조각으로 옮긴다.
+
+    한 조각이라도 못 옮기면 None 을 준다. 부르는 쪽이 그림으로 되돌린다.
+    틀린 수식을 내보내느니 그림이 낫다.
+    """
+    segs = L.segments(text)
+    if not any(s[0] == "m" for s in segs):
+        return None
+    out = []
+    for s in segs:
+        if s[0] == "t":
+            if s[1]:
+                out.append(("t", s[1]))
+            continue
+        try:
+            out.append(("m", L.to_omml(s[1]), L.to_mathml(s[1], s[2])))
+        except (L.Unsupported, Exception):
+            return None
+    return out or None
 
 
 def iter_blocks(problems, page_widths, cropper):
@@ -358,15 +387,28 @@ def iter_blocks(problems, page_widths, cropper):
             typ = b.get("type")
             iw = page_widths.get((b.get("_file"), b.get("_page")))
 
-            if typ in EX.FIGURE_TYPES or EX.is_image_md(t) or \
-                    (t and HAS_MATH.search(t)) or EX.is_display_math(b):
+            # 진짜 그림은 오려낸다
+            if typ in EX.FIGURE_TYPES or EX.is_image_md(t):
                 got = cropper.crop(b, iw)
                 if got:
                     yield ("image", got[0], got[1], not last)
                 else:
                     yield ("imgfail",)
-                    if t and not EX.is_image_md(t):
-                        yield ("text", t, not last)
+                continue
+
+            # 수식이 든 줄은 LaTeX 를 워드 수식으로 옮긴다.
+            # 못 옮기는 줄만 예전처럼 그림으로 되돌린다.
+            if t and (HAS_MATH.search(t) or EX.is_display_math(b)):
+                parts = to_rich(t)
+                if parts:
+                    yield ("rich", parts, not last)
+                    continue
+                got = cropper.crop(b, iw)
+                if got:
+                    yield ("image", got[0], got[1], not last)
+                else:
+                    yield ("imgfail",)
+                    yield ("text", t, not last)
                 continue
 
             if not t:
@@ -382,7 +424,6 @@ def iter_blocks(problems, page_widths, cropper):
             yield ("text", t, not last)
 
         yield ("answer",)
-        yield ("sep",)
 
 
 def build(problems, page_widths, cropper, out_path, title, answer_lines):
@@ -408,7 +449,7 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
     r.bold = True
     r.font.size = Pt(13)
 
-    n_img, n_fail = 0, 0
+    n_img, n_fail, n_math = 0, 0, 0
 
     for ev in iter_blocks(problems, page_widths, cropper):
         kind = ev[0]
@@ -423,6 +464,9 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
             add_label(doc, ev[1])
         elif kind == "text":
             add_text(doc, ev[1], keep=ev[2])
+        elif kind == "rich":
+            add_rich(doc, ev[1], keep=ev[2])
+            n_math += sum(1 for x in ev[1] if x[0] == "m")
         elif kind == "image":
             add_image(doc, ev[1], ev[2], keep=ev[3])
             n_img += 1
@@ -430,13 +474,11 @@ def build(problems, page_widths, cropper, out_path, title, answer_lines):
             n_fail += 1
         elif kind == "answer":
             add_answer_space(doc, answer_lines)
-        elif kind == "sep":
-            add_separator(doc)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".",
                 exist_ok=True)
     doc.save(out_path)
-    return n_img, n_fail
+    return n_img, n_fail, n_math
 
 
 HTML_CSS = """
@@ -489,8 +531,9 @@ body{
 .line{ font-size:10pt; line-height:1.5; margin:0 0 2pt; }
 .line img{ display:block; max-width:100%; margin:1pt 0; }
 .ans{ border-bottom:1px solid var(--answer); height:1.5em; margin-top:4pt; }
-.sep{ border-bottom:2px solid #999; margin:6pt 0 0; }
 .miss{ font-size:9pt; color:#a8442a; }
+math{ font-size:1.02em; }
+math[display="block"]{ display:block; margin:2pt 0; }
 
 @media print{
   body{ background:#fff; }
@@ -508,7 +551,7 @@ def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
 
     그림은 base64 로 파일 안에 박는다. 이 파일 하나만 열면 다 보인다.
     """
-    out, n_img, n_fail = [], 0, 0
+    out, n_img, n_fail, n_math = [], 0, 0, 0
     A = out.append
 
     A(f"<title>{html.escape(title)}</title>")
@@ -535,6 +578,15 @@ def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
             A(f"<div class='label'>{html.escape(ev[1])}</div>")
         elif kind == "text":
             A(f"<div class='line'>{html.escape(ev[1])}</div>")
+        elif kind == "rich":
+            bits = []
+            for part in ev[1]:
+                if part[0] == "t":
+                    bits.append(html.escape(part[1]))
+                else:
+                    bits.append(part[2])
+                    n_math += 1
+            A("<div class='line'>" + "".join(bits) + "</div>")
         elif kind == "image":
             try:
                 with open(ev[1], "rb") as fh:
@@ -552,8 +604,6 @@ def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
         elif kind == "answer":
             for _ in range(answer_lines):
                 A("<div class='ans'></div>")
-        elif kind == "sep":
-            A("<div class='sep'></div>")
 
     if open_q:
         A("</div>")
@@ -563,7 +613,7 @@ def build_html(problems, page_widths, cropper, out_path, title, answer_lines):
                 exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(out))
-    return n_img, n_fail
+    return n_img, n_fail, n_math
 
 
 def main():
@@ -627,20 +677,21 @@ def main():
     cropper = Cropper(pdf_dirs, args.cropdir, body_widths)
 
     if args.html_only:
-        n_img, n_fail = 0, 0
+        n_img, n_fail, n_math = 0, 0, 0
     else:
-        n_img, n_fail = build(problems, page_widths, cropper, args.out,
-                              args.title, args.answer_lines)
+        n_img, n_fail, n_math = build(problems, page_widths, cropper,
+                                      args.out, args.title, args.answer_lines)
         print(f"완료: {args.out}")
 
     if args.html:
-        h_img, h_fail = build_html(problems, page_widths, cropper, args.html,
-                                   args.title, args.answer_lines)
+        h = build_html(problems, page_widths, cropper, args.html,
+                       args.title, args.answer_lines)
         print(f"완료: {args.html}  (브라우저로 열면 된다)")
         if args.html_only:
-            n_img, n_fail = h_img, h_fail
+            n_img, n_fail, n_math = h
 
-    print(f"문제 {len(problems)}개 / 오려낸 그림 {n_img}장 / 실패 {n_fail}건")
+    print(f"문제 {len(problems)}개 / 편집 가능한 수식 {n_math}개 / "
+          f"오려낸 그림 {n_img}장 / 실패 {n_fail}건")
     if cropper.fail:
         print("실패 사유:", ", ".join(f"{k} {v}" for k, v in
                                     sorted(cropper.fail.items())))
