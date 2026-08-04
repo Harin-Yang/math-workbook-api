@@ -20,8 +20,8 @@ make_docx.py
     Mathpix 가 줄마다 알려 주는 이어짐 표시로 문장을 다시 붙인다. (merge_lines)
 
 크기를 어떻게 맞추는가
-    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쎄날쎄해진다.
-    파일마다 '본문 한 줄이 껉 찹을 때의 폭' 을 배워 그걸 칼럼 폭에 맞춘다.
+    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쌀날쌀해진다.
+    파일마다 '본문 한 줄이 껴 찹을 때의 폭' 을 배워 그걸 칼럼 폭에 맞춘다.
     원본에서의 상대 크기가 그대로 유지된다.
 
 필요한 것
@@ -72,6 +72,13 @@ A4_W_MM = 210
 MARGIN_MM = 14
 GAP_MM = 7
 
+# 문제와 문제 사이에 띄울 높이. 본문 10pt 기준 세 줄쯤 된다.
+#
+# 이 여백은 '앞 문제의 마지막 줄 뒤' 에 붙인다. 다음 문제 앞에 붙이지 않는다.
+# 앞에 붙이면 문제가 다음 단으로 넘어갈 때 그 여백이 단 꼭대기에 그대로 남아
+# 단마다 시작 높이가 달라진다. 뒤에 붙이면 단 끝에서 그냥 사라진다.
+PROBLEM_GAP_PT = 36
+
 
 def col_width_mm():
     return (A4_W_MM - MARGIN_MM * 2 - GAP_MM) / 2
@@ -93,11 +100,11 @@ def find_source_pdf(pdf_dirs, run_name):
 
 
 def learn_body_width(rows):
-    """파일마다 '본문 한 줄이 껉 찹을 때의 픽셀 폭' 을 배운다.
+    """파일마다 '본문 한 줄이 껴 찹을 때의 픽셀 폭' 을 배운다.
 
-    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쎄날쎄해진다.
+    오려낸 조각을 각자 원본 크기대로 넣으면 크기가 들쌀날쌀해진다.
     본문 폭을 칼럼 폭에 맞춰 두면 원본에서의 상대 크기가 그대로 유지된다.
-    (원본에서 한 줄을 껉 채우던 것은 칼럼도 껉 채우고, 절반짜리는 절반)
+    (원본에서 한 줄을 껴 채우던 것은 칼럼도 껴 채우고, 절반짜리는 절반)
 
     큰 그림이 폭을 부풀리지 않게 위쪽 10% 는 버리고 그 다음 값을 쓴다.
     """
@@ -264,7 +271,7 @@ def set_two_columns(section, gap_mm=GAP_MM):
 
 def add_label(doc, text):
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(10)
+    p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(2)
     p.paragraph_format.keep_with_next = True
     run = p.add_run(text)
@@ -343,7 +350,7 @@ def merge_lines(body):
 
     Mathpix 가 줄마다 어떻게 끊겼는지 알려 준다.
         continues_line_space     앞줄에 이어짐 — 사이에 띄어쓰기
-        continues_line_no_space  앞줄에 이어짐 — 붙여 씀
+        continues_line_no_space  앞줄에 이어짐 — 붙여 씁
         continues_line_newline   진짜 줄바꿈 — 소문항 (1) (2) 같은 것
     앞의 둘만 이어 붙이고 나머지는 문단을 나눈다.
 
@@ -468,27 +475,47 @@ def build(problems, page_widths, cropper, out_path, title):
 
     n_img, n_fail, n_math = 0, 0, 0
 
-    for ev in iter_blocks(problems, page_widths, cropper):
+    # 문단을 만들기 전에 '다음에 무엇이 오는지' 를 먼저 본다.
+    #   다음이 새 문제면  -> 여기서 여백을 주고 붙임을 푸다
+    #   아니면            -> 다음 줄과 붙여 둔다 (문제가 단에서 안 쪼개진다)
+    events = [e for e in iter_blocks(problems, page_widths, cropper)]
+    head.paragraph_format.space_after = Pt(8)
+
+    for i, ev in enumerate(events):
         kind = ev[0]
+        nxt = next((events[j][0] for j in range(i + 1, len(events))
+                    if events[j][0] != "imgfail"), None)
+        new_problem = nxt in ("label", "file")
+        keep = not new_problem and nxt is not None
+
         if kind == "file":
-            hp = doc.add_paragraph()
-            hp.paragraph_format.space_before = Pt(12)
-            hp.paragraph_format.keep_with_next = True
-            hr = hp.add_run(ev[1])
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(4)
+            hr = p.add_run(ev[1])
             hr.bold = True
             hr.font.size = Pt(11)
         elif kind == "label":
-            add_label(doc, ev[1])
+            p = add_label(doc, ev[1])
         elif kind == "text":
-            add_text(doc, ev[1], keep=ev[2])
+            p = add_text(doc, ev[1], keep=keep)
         elif kind == "rich":
-            add_rich(doc, ev[1], keep=ev[2])
+            p = add_rich(doc, ev[1], keep=keep)
             n_math += sum(1 for x in ev[1] if x[0] == "m")
         elif kind == "image":
-            add_image(doc, ev[1], ev[2], keep=ev[3])
+            p = add_image(doc, ev[1], ev[2], keep=keep)
             n_img += 1
-        elif kind == "imgfail":
+        else:                      # imgfail — 문단을 만들지 않는다
             n_fail += 1
+            continue
+
+        # 한 문단이 단 경계에서 반으로 쪼개지지 않게 한다
+        p.paragraph_format.keep_together = True
+        # 머리글은 늘 뒤 내용과 붙어 다닌다
+        if kind in ("file", "label"):
+            p.paragraph_format.keep_with_next = True
+        if new_problem:
+            p.paragraph_format.space_after = Pt(PROBLEM_GAP_PT)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".",
                 exist_ok=True)
@@ -539,10 +566,12 @@ body{
         margin:0 0 10pt; text-wrap:balance; }
 .cols{ column-count:2; column-gap:7mm;
        column-rule:1px solid var(--rule); }
-.filehead{ font-weight:700; font-size:11pt; margin:12pt 0 2pt; }
-.q{ break-inside:avoid; page-break-inside:avoid; }
+.filehead{ font-weight:700; font-size:11pt; margin:0 0 4pt; }
+/* 문제 사이 여백은 DOCX 와 같은 값(PROBLEM_GAP_PT)을 넣는다.
+   앞 문제 뒤에 붙여야 단이 넘어갈 때 단 꼭대기에 여백이 남지 않는다. */
+.q{ break-inside:avoid; page-break-inside:avoid; margin:0 0 __GAP__; }
 .label{ font-weight:700; font-size:9pt; color:var(--label);
-        margin:10pt 0 2pt; }
+        margin:0 0 2pt; }
 .line{ font-size:10pt; line-height:1.5; margin:0 0 2pt; }
 .line img{ display:block; max-width:100%; margin:1pt 0; }
 .miss{ font-size:9pt; color:#a8442a; }
@@ -569,11 +598,12 @@ def build_html(problems, page_widths, cropper, out_path, title):
     A = out.append
 
     A(f"<title>{html.escape(title)}</title>")
-    A(f"<style>{HTML_CSS}</style>")
+    A("<style>" + HTML_CSS.replace("__GAP__", f"{PROBLEM_GAP_PT}pt")
+      + "</style>")
     A("<div class='bar'><b>" + html.escape(title) + "</b>")
     A(f"<span class='n'>문제 {len(problems)}개</span>")
     A("<span class='hint'>DOCX 와 같은 조판 코드로 그린 것이다. "
-      "Ctrl+P 로 쪽 나뉨까지 볼 수 있다.</span></div>")
+      "Ctrl+P 로 쪽 나뉩까지 볼 수 있다.</span></div>")
     A("<div class='sheet'>")
     A(f"<div class='title'>{html.escape(title)}</div><div class='cols'>")
 
