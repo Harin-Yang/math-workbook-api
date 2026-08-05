@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract.py  v8
+extract.py  v9
 lines.json 에서 문제만 골라낸다. Mathpix 재호출 없음 = 비용 0원.
 
 사용법:
@@ -28,6 +28,12 @@ v6 에서 더한 것 (기본 꿨짐):
 v7 에서 고친 것:
   - 이어짐 줄을 건너뛰기 전에 명령형 어미를 먼저 본다.
 
+v9 에서 더한 것 (타 출판사 표기 보강):
+  - '1. 다음 …' (번호+점) 과 '1 다음 …' (번호만) 표기를 추가했다.
+    번호만 있는 표기는 함정이 많아 세 겹 안전장치를 건다:
+    이어짐 줄 제외 / 뒤에 단위·조사가 오면 제외 / 몇 줄 안에 명령형 어미 필수.
+  - '생각 열기·생각 톡' 류는 넣지 않았다. 활동 자료지 문제가 아니다.
+
 v8 에서 고친 것:
   - 이어짐 표시를 세로 간격으로 두 종류로 가른다.
   - '(단, ...)' 같은 단서 절은 어미 뒤에 와도 발문의 일부로 본다.
@@ -53,7 +59,32 @@ START_PATTERNS = [
     ("유형", re.compile(r"^\s*유형\s*(\d{1,3})"),                 "유형"),
     ("확인", re.compile(r"^\s*확인\s*문제\s*(\d{1,3})"),           "문제"),
     ("두자리", re.compile(r"^\s*(0\d)(?!\d)"),                    "번호"),
+    # 타 출판사 (v9). '01.' 은 위의 두자리가 먼저 맞으므로 여기는 점 있는 한 자리부터.
+    ("번호점", re.compile(r"^\s*(\d{1,2})\s*[.．]\s*(?!\d)"),      "번호"),
+    ("번호", re.compile(r"^\s*(\d{1,2})(?=\s+[가-힣(])"),           "번호"),
 ]
+
+# 약한 표기 — 번호가 지문 속 숫자와 헷갈린다. build() 에서 안전장치를 더 건다.
+WEAK_START = {"번호점", "번호"}
+
+# 번호 표기처럼 보여도 '…란 무엇일까' 로 이어지면 개념 꼭지 제목이다.
+# (기하 교과서의 '1 타원이란 무엇일까' 가 문제로 잡혔다. 물음 꼬리는 앞머리에 온다)
+CONCEPT_HEAD = re.compile(r"^\s*\d{1,2}\s+.{0,24}(일까|할까)")
+
+# 번호 뒤에 이런 말이 오면 표기가 아니라 지문 속 숫자다. '5 개이다', '10 이하의 …'
+NUMBER_FALSE_FOLLOW = re.compile(
+    r"^\s*\d{1,2}\s*[.．]?\s*"
+    r"(이상|이하|초과|미만|부터|까지|개|명|번|회|장|쪽|권|팀|조|마리|자루|켤레|봉지|상자"
+    r"|원|년|월|일|시간|시|분|초|살|점|배|가지|자리|칸|줄|행|열"
+    r"|이다|이며|이고|의|는|은|을|를|이(?![가-힣])|가|와|과|로|에)")
+
+# 약한 표기는 이 줄수 안에 명령형 어미가 있어야 문제로 인정한다.
+WEAK_LOOK = 8
+
+# 바로 위 몇 줄이 '…알아보자' 같은 활동 도입으로 끝나면, 뒤따르는 번호는
+# 문제가 아니라 활동의 소문항이다 (신사고 '…경우를 알아보자' 밑의 1, 2).
+ACTIVITY_INTRO = re.compile(r"(알아|살펴|생각해|확인해|정리해)\s*보자\s*[.．]?\s*$")
+WEAK_BACK = 3
 
 # 발문 끝을 알리는 명령형 어미. 뒤에 '(단, a>0)' 이 붙어도 끝으로 본다.
 ORDER_END = re.compile(
@@ -445,9 +476,41 @@ def build(rows, page_width):
         if ln.get("type") not in BODY_TYPES:
             continue
         m = match_start(ln)
-        if m:
-            cands.append({"idx": i, "line": ln, "name": m[0],
-                          "raw": m[1], "kind": m[2]})
+        if not m:
+            continue
+        if m[0] in WEAK_START:
+            # 약한 표기 안전장치.
+            # 1) 윗줄에서 이어지는 줄이면 지문 속 숫자다.
+            if ln.get("subtype") in CONTINUE_SUBTYPES:
+                continue
+            # 2) 번호 뒤에 단위·조사가 오면 지문 속 숫자다.
+            if NUMBER_FALSE_FOLLOW.match(txt(ln)):
+                continue
+            # 2-2) '…란 무엇일까' 로 이어지면 개념 꼭지 제목이다.
+            if CONCEPT_HEAD.match(txt(ln)):
+                continue
+            # 3) 몇 줄 안에 명령형 어미가 없으면 목차나 소제목이다.
+            ok = False
+            for k in range(i, min(i + WEAK_LOOK, len(live))):
+                if live[k].get("_file") != ln.get("_file"):
+                    break
+                if ORDER_END.search(txt(live[k])):
+                    ok = True
+                    break
+            if not ok:
+                continue
+            # 4) 바로 위가 활동 도입(…알아보자)이면 활동 소문항이다.
+            intro = False
+            for k in range(max(0, i - WEAK_BACK), i):
+                if live[k].get("_file") != ln.get("_file"):
+                    continue
+                if ACTIVITY_INTRO.search(txt(live[k])):
+                    intro = True
+                    break
+            if intro:
+                continue
+        cands.append({"idx": i, "line": ln, "name": m[0],
+                      "raw": m[1], "kind": m[2]})
 
     # 4) 파일별 x 대역 학습
     byfile = defaultdict(list)
