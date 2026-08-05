@@ -394,7 +394,7 @@ def iter_blocks(problems, page_widths, cropper):
             yield ("file", str(cur_file))
 
         num = p["num"] if p["num"] is not None else ""
-        yield ("label", f"{p['name']} {num}   (원본 {p['page']}쪽)")
+        yield ("label", f"{EX.display_name(p['name'])} {num}   (원본 {p['page']}쪽)")
 
         body = list(p["body"])
         for f in list(p["figs"]) + list(p["figs_guess"]):
@@ -423,6 +423,8 @@ def iter_blocks(problems, page_widths, cropper):
                     if m:
                         t = t[m.end():].strip()
                         break
+                # '01. 원 …' 에서 번호만 떼면 '. 원 …' 이 남는다. 부스러기를 청소한다.
+                t = t.lstrip(" .．)〕]")
 
             has_math = t and (HAS_MATH.search(t)
                               or any(EX.is_display_math(b)
