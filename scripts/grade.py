@@ -136,7 +136,23 @@ def load_extracted(stage_dir, filters):
         if w:
             pw = max(pw or 0, w)
 
-    problems, kept, dropped_x, live, st = EX.build(all_rows, pw)
+    # GRADE_LLM=1 이면 표기 없는 후보(UNMARKED)까지 만들고 LLM 으로 거른다.
+    # 분류기를 붙였을 때 점수가 어떻게 변하는지 재는 스위치다.
+    if os.environ.get("GRADE_LLM") == "1":
+        import llm_filter as LF
+
+        judge = LF.openai_judge()
+        if judge is None:
+            sys.exit("GRADE_LLM=1 인데 OPENAI_API_KEY 가 없습니다.")
+        EX.UNMARKED = True
+        problems, kept, dropped_x, live, st = EX.build(all_rows, pw)
+        problems, tally = LF.filter_unmarked(
+            problems, EX.txt, judge,
+            progress=lambda i, n: print(f"  LLM 판정 {i}/{n}", end="\r", file=sys.stderr))
+        print(f"\nLLM 판정: 후보 {tally['asked']} -> 채택 {tally['accepted']} "
+              f"(실패 {tally['failed']})", file=sys.stderr)
+    else:
+        problems, kept, dropped_x, live, st = EX.build(all_rows, pw)
 
     out = []
     for p in problems:
