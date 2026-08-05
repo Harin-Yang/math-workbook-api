@@ -211,6 +211,9 @@ class Parser:
             if val == "/" and self.peek() == ("ch", "/"):
                 self.next()
                 return {"k": "run", "t": "∥", "sty": "p"}
+            # LaTeX 의 ~ 는 줄바꿈 없는 공백이다. 물결로 찍으면 안 된다.
+            if val == "~":
+                return {"k": "run", "t": " ", "sty": "p"}
             return {"k": "run", "t": val, "sty": "i" if val.isalpha() else "p"}
 
         if kind == "amp":
@@ -474,6 +477,11 @@ def to_omml(latex):
 
 
 # ── MathML 내보내기 (브라우저 미리보기용) ──────────────────────────────
+
+# 윗기호의 결합 문자 -> 화면용 보통 글자
+ACCENT_SPACING = {"⃗": "→", "⃖": "←", "̂": "^", "̃": "~",
+                  "̇": "˙", "̈": "¨"}
+
 def _m(nodes, sty=None):
     out = []
     for n in nodes:
@@ -523,8 +531,11 @@ def _m(nodes, sty=None):
             out.append(f"<mmultiscripts><mrow>{_m(n['base'], sty)}</mrow>"
                        f"<mprescripts/>{sb}{sp}</mmultiscripts>")
         elif k == "acc":
+            # 결합 문자는 홀로 서지 못해 브라우저가 빈 칸으로 그린다.
+            # 화면용에는 보통 글자(→ 등)로 바꿔 얹는다. 워드용(OMML)은 결합 문자가 맞다.
+            chho = ACCENT_SPACING.get(n["chr"], n["chr"])
             out.append(f"<mover accent='true'><mrow>{_m(n['e'], sty)}</mrow>"
-                       f"<mo>{escape(n['chr'])}</mo></mover>")
+                       f"<mo stretchy='true'>{escape(chho)}</mo></mover>")
         elif k == "bar":
             tag = "mover" if n["pos"] == "top" else "munder"
             bar = "&#x00AF;" if n["pos"] == "top" else "&#x005F;"
