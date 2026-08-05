@@ -15,10 +15,11 @@ Mathpix 가 준 LaTeX 를 워드 수식(OMML)으로 옮긴다. 외부 패키지 
     모르는 문법을 만나면 Unsupported 를 던진다.
     부르는 쪽이 그 줄만 예전처럼 그림으로 박으면 된다. 절대 틀린 수식을 내보내지 않는다.
 
-같은 나무에서 두 가지를 뽑는다
-    to_omml()    워드용
-    to_mathml()  브라우저 미리보기용 (요즘 브라우저는 MathML 을 그대로 그린다)
-    한 벌로 만들어야 미리보기와 DOCX 가 어긋나지 않는다.
+같은 나무에서 세 가지를 뽑는다
+    to_omml()        워드용
+    to_mathml()      브라우저 미리보기용 (요즘 브라우저는 MathML 을 그대로 그린다)
+    to_hwp_script()  한/글용 (한/글 수식 편집기의 자체 스크립트, 한컴 공식 스펙 rev1.3)
+    한 벌로 만들어야 미리보기·DOCX·HWPX 가 어긋나지 않는다.
 
 시험:
     python3 scripts/latex2omml.py --selftest
@@ -561,6 +562,105 @@ def to_mathml(latex, display=False):
             f"display='{d}'><mrow>{body}</mrow></math>")
 
 
+# ── 한/글 수식 스크립트 내보내기 (HWPX 용) ───────────────────────────
+#
+# 한/글 수식 편집기는 자체 스크립트를 쓴다 (한컴 공식 스펙 '수식' rev 1.3).
+#   분수 a over b / 근호 sqrt {x} / 첨자 ^{ } _{ } / 벡터 vec {x} / 윗줄 bar {x}
+#   괄호 LEFT ( ... RIGHT ) / 앞첨자 LSUB
+# 기호는 한/글 명령이 있으면 그걸 쓰고, 없으면 유니코드 글자를 그대로 둔다
+# (수식 편집기는 유니코드 글자를 받아들인다).
+
+HWP_SYMBOL = {
+    "×": "times", "÷": "div", "±": "+-", "∓": "-+",
+    "≠": "!=", "≤": "leq", "≥": "geq", "≡": "==",
+    "∈": "in", "∉": "notin", "⊂": "subset", "⊆": "subseteq",
+    "∩": "cap", "∪": "cup", "→": "rarrow", "←": "larrow",
+    "⇒": "RARROW", "⇔": "LRARROW", "∞": "inf", "∴": "therefore",
+    "∵": "because", "∑": "sum", "∏": "prod", "∫": "int",
+    "π": "pi", "α": "alpha", "β": "beta", "γ": "gamma", "θ": "theta",
+    "λ": "lambda", "μ": "mu", "σ": "sigma", "ω": "omega", "Δ": "DELTA",
+    "⋯": "cdots", "…": "ldots", "∥": "parallel", "⊥": "perp",
+    "√": "sqrt",
+}
+
+# 한/글 스크립트에서 특별한 뜻을 갖는 글자. 글자 그대로 내보낼 땐 따옴표로 감싼다.
+_HWP_SPECIAL = set("{}^_&#~`\"")
+
+
+def _hs_run(text, sty):
+    del sty
+    out = []
+    for ch in text:
+        if ch in HWP_SYMBOL:
+            out.append(" " + HWP_SYMBOL[ch] + " ")
+        elif ch in _HWP_SPECIAL:
+            out.append('"' + ch + '"')
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _hs(nodes, sty=None):
+    out = []
+    for n in nodes:
+        k = n["k"]
+        if k == "run":
+            out.append(_hs_run(n["t"], sty or n["sty"]))
+        elif k == "row":
+            out.append("{" + _hs(n["e"], sty) + "}")
+        elif k == "style":
+            body = _hs(n["e"], n["sty"])
+            # 로만체 강제is rm — 함수 이름·단위가 이탤릭이 되는 것을 막는다
+            out.append("{rm {" + body + "}}" if n["sty"] == "p" else "{" + body + "}")
+        elif k == "frac":
+            out.append("{" + _hs(n["n"], sty) + "} over {" + _hs(n["d"], sty) + "}")
+        elif k == "rad":
+            if n["deg"]:
+                out.append("^{" + _hs(n["deg"], sty) + "} sqrt {" + _hs(n["e"], sty) + "}")
+            else:
+                out.append("sqrt {" + _hs(n["e"], sty) + "}")
+        elif k == "sup":
+            out.append("{" + _hs(n["base"], sty) + "} ^{" + _hs(n["sup"], sty) + "}")
+        elif k == "sub":
+            out.append("{" + _hs(n["base"], sty) + "} _{" + _hs(n["sub"], sty) + "}")
+        elif k == "subsup":
+            out.append("{" + _hs(n["base"], sty) + "} _{" + _hs(n["sub"], sty)
+                       + "} ^{" + _hs(n["sup"], sty) + "}")
+        elif k == "pre":
+            inner = "{" + _hs(n["base"], sty) + "}"
+            if n.get("sub"):
+                inner += " LSUB {" + _hs(n["sub"], sty) + "}"
+            if n.get("sup"):
+                inner += " LSUP {" + _hs(n["sup"], sty) + "}"
+            out.append(inner)
+        elif k == "acc":
+            cmd = {"⃗": "vec", "⃖": "vec", "̂": "hat", "̃": "tilde",
+                   "̇": "dot", "̈": "ddot"}.get(n["chr"])
+            if cmd is None:
+                raise Unsupported(f"한/글로 못 옮기는 윗기호: {n['chr']!r}")
+            out.append(cmd + " {" + _hs(n["e"], sty) + "}")
+        elif k == "bar":
+            if n["pos"] == "top":
+                out.append("bar {" + _hs(n["e"], sty) + "}")
+            else:
+                out.append("under {" + _hs(n["e"], sty) + "}")
+        elif k == "delim":
+            opener = n["open"] or "("
+            closer = n["close"] or ")"
+            out.append("LEFT " + opener + " " + _hs(n["e"], sty) + " RIGHT " + closer)
+        else:
+            raise Unsupported(f"한/글로 내보낼 수 없는 조각: {k}")
+    return " ".join(part for part in out if part.strip())
+
+
+def to_hwp_script(latex):
+    """LaTeX -> 한/글 수식 스크립트. 못 옮기면 Unsupported."""
+    body = _hs(parse(latex))
+    if not body.strip():
+        raise Unsupported("빈 수식")
+    return body
+
+
 # ── 줄 하나를 글자와 수식으로 가르기 ─────────────────────────────────
 SPLIT = re.compile(
     r"\\\[(?P<disp>.*?)\\\]"
@@ -617,7 +717,8 @@ def selftest():
         try:
             o = to_omml(c)
             m = to_mathml(c)
-            assert o.startswith("<m:oMath") and m.startswith("<math")
+            h = to_hwp_script(c)
+            assert o.startswith("<m:oMath") and m.startswith("<math") and h.strip()
             print(f"  OK   {c[:56]}")
         except Exception as e:
             bad += 1
