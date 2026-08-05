@@ -575,7 +575,8 @@ body{
 .line{ font-size:10pt; line-height:1.5; margin:0 0 2pt; }
 .line img{ display:block; max-width:100%; margin:1pt 0; }
 .miss{ font-size:9pt; color:#a8442a; }
-math{ font-size:1.02em; }
+/* 본문 속 분수도 교과서처럼 크게 편다. 기본값(compact)은 분수를 눌러 작게 그린다. */
+math{ font-size:1.02em; math-style:normal; }
 math[display="block"]{ display:block; margin:2pt 0; }
 
 @media print{
