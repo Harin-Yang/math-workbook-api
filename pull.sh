@@ -47,10 +47,12 @@ main() {
     return 1
   fi
 
-  if [ -f "$TMP/pull.sh" ]; then
-    cp "$TMP/pull.sh" pull.sh
-    echo "  OK   pull.sh  ($(wc -l < "$TMP/pull.sh")줄)"
-  fi
+  for base in pull.sh HANDOFF.md CLAUDE.md; do
+    if [ -f "$TMP/$base" ]; then
+      cp "$TMP/$base" "$base"
+      echo "  OK   $base  ($(wc -l < "$TMP/$base")줄)"
+    fi
+  done
   chmod +x scripts/*.sh 2>/dev/null
 
   echo
