@@ -102,6 +102,10 @@ ORDER_END = re.compile(
     r"\s*[.．]?\s*$")
 
 SUB_ITEM = re.compile(r"^\s*[(（\[]\s*\d{1,2}\s*[)）\]]|^\s*[①-⑳]|^\s*[⑴-⒇]")
+# '옳은 것만을 보기에서 고르시오' 류의 보기 상자 — 어미 뒤에 오지만 발문의 일부다.
+# 항목 머리는 호환 자모(ㄱ)와 첫소리 자모(ᄀ)가 섞여 온다 (OCR 실측).
+BOGI_HEAD = re.compile(r"^[\[|]?\s*보\s?기\s*[\]|]?$")
+BOGI_ITEM = re.compile(r"^\s*[ㄱ-ㅎᄀ-ᄒ]\s*[.．)]")
 
 # 발문 뒤에 따라붙는 단서. '(단, 꺼낸 것은 다시 넣지 않는다)' 같은 것.
 PROVISO = re.compile(r"^\s*[(（]?\s*(단|주의|참고로)\s*[,，]")
@@ -420,6 +424,11 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
 
         # '(단, ...)' 같은 단서는 어미 뒤에 와도 발문의 일부다.
         if seen_order and PROVISO.match(t):
+            i += 1
+            continue
+
+        # 보기 상자(보기 / ㄱ.ㄴ.ㄷ. 항목)도 어미 뒤에 오지만 발문의 일부다.
+        if seen_order and (BOGI_HEAD.match(t) or BOGI_ITEM.match(t)):
             i += 1
             continue
 
