@@ -543,10 +543,11 @@ def _m(nodes, sty=None):
             out.append(f"<mover accent='true'><mrow>{_m(n['e'], sty)}</mrow>"
                        f"<mo stretchy='true'>{escape(chho)}</mo></mover>")
         elif k == "bar":
-            tag = "mover" if n["pos"] == "top" else "munder"
-            bar = "&#x00AF;" if n["pos"] == "top" else "&#x005F;"
-            out.append(f"<{tag} accent='true'><mrow>{_m(n['e'], sty)}</mrow>"
-                       f"<mo>{bar}</mo></{tag}>")
+            # 윗줄 기호(¯)는 글꼴이 늘여 주지 않아 두 글자 위에서도 짧게 보인다
+            # (Latin Modern·STIX 모두 실물 확인). mover 대신 테두리 선으로 긋는다
+            # — 폭이 내용에 정확히 맞는다. CSS 는 조판 CSS(.ovl/.unl)에 있다.
+            cls = "ovl" if n["pos"] == "top" else "unl"
+            out.append(f"<mrow class='{cls}'>{_m(n['e'], sty)}</mrow>")
         elif k == "delim":
             o = escape(n["open"]) if n["open"] else ""
             c = escape(n["close"]) if n["close"] else ""

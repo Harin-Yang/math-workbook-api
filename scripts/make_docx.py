@@ -581,6 +581,9 @@ body{
 .miss{ font-size:9pt; color:#a8442a; }
 /* 본문 속 분수도 교과서처럼 크게 편다. 기본값(compact)은 분수를 눌러 작게 그린다. */
 math{ font-size:1.02em; math-style:normal; }
+/* 선분 윗줄(overline) — 글꼴 기호는 안 늘어나 테두리 선으로 긋는다 */
+.ovl{ border-top:.075em solid currentColor; padding-top:.1em; }
+.unl{ border-bottom:.075em solid currentColor; padding-bottom:.1em; }
 math[display="block"]{ display:block; margin:2pt 0; }
 
 @media print{
