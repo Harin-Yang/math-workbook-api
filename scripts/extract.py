@@ -605,10 +605,12 @@ def build(rows, page_width):
 
     for p in problems:
         p["figs_guess"] = []
-        if p["figs"] or not FIGURE_REF.search(p["head"]):
-            continue
+        # 그림 언급은 본문 전체에서 찾는다 — 머리 90자만 보면
+        # '…를 오른쪽 그림과 같이' 처럼 둘째 줄부터 나오는 언급을 놓친다 (실측).
+        full_text = " ".join(txt(b) for b in p["body"])
+        mentions = bool(FIGURE_REF.search(full_text))
         ys = [ry(b) for b in p["body"] if isinstance(ry(b), (int, float))]
-        if not ys:
+        if p["figs"] or not ys:
             continue
         y0, y1 = min(ys), max(ys)
         for f in figs_by_page.get((p["file"], p["page"]), []):
@@ -617,7 +619,10 @@ def build(rows, page_width):
             fy = ry(f)
             if not isinstance(fy, (int, float)):
                 continue
-            if y0 - FIGURE_GUESS_RANGE <= fy <= y1 + FIGURE_GUESS_RANGE:
+            # 발문이 그림을 가리키면 위아래 여유까지, 아니면 문제 세로 구간 안에
+            # 놓인 그림만 (오른쪽 열 그림은 줄 순서만 뒤로 밀려 본문 밖에 있다).
+            margin = FIGURE_GUESS_RANGE if mentions else 0
+            if y0 - margin <= fy <= y1 + margin:
                 p["figs_guess"].append(f)
         for f in p["figs_guess"]:
             used_fig.add(id(f))

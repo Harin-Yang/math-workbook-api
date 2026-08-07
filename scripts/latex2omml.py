@@ -499,6 +499,11 @@ def _m(nodes, sty=None):
                     out.append(f"<mi mathvariant='normal'>{t}</mi>")
                 else:
                     out.append(f"<mi>{t}</mi>")
+            elif n["t"] in ("(", ")", "[", "]", "{", "}", "|"):
+                # 일반 괄호는 늘이지 않는다. 브라우저는 줄 맨 앞의 여는 괄호만
+                # 분수 높이로 길게 늘여 여닫이 짝이 안 맞아 보인다 (실물 확인).
+                # 늘어나는 괄호는 \left \right(delim)만 쓴다.
+                out.append(f"<mo stretchy='false'>{t}</mo>")
             else:
                 out.append(f"<mo>{t}</mo>")
         elif k == "row":
