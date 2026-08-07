@@ -935,3 +935,13 @@ HWPX 교훈 넷: ① 밑판은 한/글이 저장한 진품이어야 한다 ② l
   이제 가입하면 6자리 코드가 자동으로 간다. 관리자 수동 조회
   (GET /v1/admin/verification-code)는 예비로 남아 있다.
 - 남은 외부 계약: ① PG (사업자등록·통신판매업 신고 후) ② Turnstile.
+
+### 2026-08-07 — Turnstile 가입 봇 방어 구현 (backend 1.49.1) — 키 대기
+- 가입(/v1/auth/signup)에만 적용. 서버가 클라우드플레어 siteverify 로 토큰 검증,
+  화면은 GET /v1/auth/config 의 공개 키가 있을 때만 위젯을 그린다.
+- .env 두 줄(TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY)이 비어 있으면 완전 무동작
+  (현재 상태). 확인 서버 장애 시 가입을 막지 않는다 (redis 제한과 같은 fail-open).
+- 공식 시험 키 3종(없음/항상통과 1x…AA/항상실패 2x…AA)으로 검증 완료.
+- **사용자 작업 대기**: 클라우드플레어 계정 → Turnstile 위젯 생성
+  (도메인 158-247-240-59.sslip.io) → Site Key·Secret Key 두 개를 받아 오면
+  .env 에 넣고 재기동으로 켠다.
