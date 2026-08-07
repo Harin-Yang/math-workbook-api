@@ -56,6 +56,26 @@ def paragraph_text(problem, txt) -> str:
     return "\n".join(parts)[:MAX_ITEM_CHARS]
 
 
+def _openai_call(key: str, model: str, system: str, user: str) -> str:
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_completion_tokens": 1000,
+    }).encode()
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=body, method="POST",
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=CALL_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read())
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
 def openai_judge(api_key: str | None = None, model: str | None = None):
     """문단 -> True(문제)/False(아님) 판정 함수를 만든다."""
     key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -64,26 +84,22 @@ def openai_judge(api_key: str | None = None, model: str | None = None):
         return None
 
     def judge(text: str) -> bool:
-        body = json.dumps({
-            "model": chosen,
-            "messages": [
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": text},
-            ],
-            "max_completion_tokens": 1000,
-        }).encode()
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=body, method="POST",
-            headers={"Authorization": f"Bearer {key}",
-                     "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=CALL_TIMEOUT_SECONDS) as response:
-            data = json.loads(response.read())
-        answer = (data["choices"][0]["message"]["content"] or "").strip()
-        return "문제" in answer[:6]
+        return "문제" in _openai_call(key, chosen, PROMPT, text)[:6]
 
     return judge
+
+
+def openai_ask(api_key: str | None = None, model: str | None = None):
+    """(지시문, 본문) -> 답 글자를 돌려주는 일반 질의 함수를 만든다. (경계 묻기용)"""
+    key = api_key or os.environ.get("OPENAI_API_KEY")
+    chosen = model or os.environ.get("LLM_FILTER_MODEL") or DEFAULT_MODEL
+    if not key:
+        return None
+
+    def ask(system: str, user: str) -> str:
+        return _openai_call(key, chosen, system, user)
+
+    return ask
 
 
 def filter_unmarked(problems, txt, judge, progress=None):
@@ -114,3 +130,128 @@ def filter_unmarked(problems, txt, judge, progress=None):
             accepted += 1
             kept.append(problem)
     return kept, {"asked": asked, "accepted": accepted, "failed": failed}
+
+
+# ── 지문형 문제의 경계 다시 묻기 ─────────────────────────────────────
+# 표기 없는 문제는 여러 문단(도입 + 지시 + 소문항)으로 구성되기도 한다.
+# 룰은 문단 하나만 후보로 뜨므로 반쪽 회수(잘림)가 남는다 (기하 31 등 실측).
+# 채택된 지문 문제마다 앞뒤 이웃 문단을 번호 붙여 보여 주고
+# '문제 하나가 어느 문단들로 이루어지는가'를 한 번 더 묻는다.
+
+BOUNDARY_PROMPT = """수학 교과서에서 이어진 문단들이 번호와 함께 주어진다.
+그중 ★ 표시된 문단은 학생에게 내는 문제(의 일부)다.
+
+이 문제 하나가 어느 문단들로 이루어지는지 골라라.
+- 문제의 상황 설명(도입)이 앞 문단에, 소문항·지시가 뒤 문단에 있을 수 있다.
+- 개념 설명, 정의, 예제의 풀이 과정, 읽을거리(수학 이야기)는 문제의 일부가 아니다.
+- 확실하지 않으면 ★ 문단 하나만 골라라.
+
+답은 문제에 속하는 번호만 쉼표로 쓴다. (예: 2,3  또는 3)"""
+
+BOUNDARY_MAX_BLOCKS = 2       # 앞뒤로 각각 최대 몇 문단까지 보여 줄지
+BOUNDARY_BLOCK_CHARS = 400
+
+
+def _block_ranges(live, txt, line_gap, thr, claimed, file_name, start, step):
+    """start 에서 step 방향으로 이웃 문단 구간 [(s, e)…] 을 가까운 순서로 모은다."""
+    blocks = []
+    j = start
+    edge = None                 # 지금 모으는 블록의 바깥쪽 끝
+    inner = None                #                  안쪽 끝 (문제와 가까운 쪽)
+    while 0 <= j < len(live) and len(blocks) < BOUNDARY_MAX_BLOCKS:
+        ln = live[j]
+        if id(ln) in claimed or ln.get("_file") != file_name \
+                or ln.get("type") == "section_header":
+            break
+        neighbor = live[j - step] if 0 <= j - step < len(live) else None
+        g = None
+        if neighbor is not None:
+            pair = (neighbor, ln) if step == 1 else (ln, neighbor)
+            g = line_gap(pair[0], pair[1])
+        if inner is not None and thr and g is not None and g > thr:
+            blocks.append((min(edge, inner), max(edge, inner)))
+            edge = inner = None
+            continue            # j 는 새 블록의 첫 줄로 다시 본다
+        if inner is None:
+            inner = j
+        edge = j
+        j += step
+    if inner is not None and len(blocks) < BOUNDARY_MAX_BLOCKS:
+        blocks.append((min(edge, inner), max(edge, inner)))
+    return blocks
+
+
+def _block_text(live, txt, s, e):
+    parts = []
+    for ln in live[s:e + 1]:
+        t = txt(ln)
+        if t and not t.startswith("!["):
+            parts.append(t)
+    return " ".join(parts)[:BOUNDARY_BLOCK_CHARS]
+
+
+def refine_boundaries(problems, live, txt, line_gap, gap_thr, ask, progress=None):
+    """채택된 '지문' 문제의 경계를 이웃 문단까지 보여 주고 LLM 에게 다시 묻는다.
+
+    반환: (문제들, 집계). ask 를 주입받으므로 시험에서는 가짜 답으로 돌릴 수 있다.
+    """
+    index_of = {id(ln): i for i, ln in enumerate(live)}
+    claimed = {id(ln) for p in problems for ln in p["body"]}
+    # 지문 + 약한 표기(번호·번호점) — 활동 상자('찾아보기 1, 2')의 소문항 하나만
+    # 잡히는 경우가 있다 (기하 기준 31 실측). 앞줄이 다른 문제에 속하면
+    # 물어볼 이웃이 없어 질의가 생기지 않으므로 보통 문제에는 비용이 안 든다.
+    targets = [p for p in problems if p["name"] in ("지문", "번호", "번호점")]
+    asked = widened = failed = 0
+    for p in targets:
+        file_name = p["body"][0].get("_file")
+        thr = gap_thr.get(file_name) if gap_thr else None
+        s = index_of.get(id(p["body"][0]))
+        e = index_of.get(id(p["body"][-1]))
+        if s is None or e is None:
+            continue
+        before = _block_ranges(live, txt, line_gap, thr, claimed, file_name, s - 1, -1)
+        after = _block_ranges(live, txt, line_gap, thr, claimed, file_name, e + 1, +1)
+        before = [b for b in before if _block_text(live, txt, *b)]
+        after = [b for b in after if _block_text(live, txt, *b)]
+        if not before and not after:
+            continue
+
+        ordered = list(reversed(before)) + [(s, e)] + after
+        anchor = len(before) + 1
+        lines = []
+        for k, (bs, be) in enumerate(ordered, 1):
+            star = " ★" if k == anchor else ""
+            lines.append(f"[{k}]{star} {_block_text(live, txt, bs, be)}")
+        asked += 1
+        if progress:
+            progress(asked, len(targets))
+        try:
+            answer = ask(BOUNDARY_PROMPT, "\n\n".join(lines))
+        except Exception:
+            failed += 1
+            time.sleep(1.0)
+            continue
+        picked = {int(n) for n in re.findall(r"\d+", answer) if 1 <= int(n) <= len(ordered)}
+        if anchor not in picked:
+            continue
+        # ★ 를 포함해 이어진 구간만 인정한다 (건너뛴 선택은 무시)
+        lo = anchor
+        while lo - 1 in picked:
+            lo -= 1
+        hi = anchor
+        while hi + 1 in picked:
+            hi += 1
+        if lo == anchor and hi == anchor:
+            continue
+        new_s = ordered[lo - 1][0]
+        new_e = ordered[hi - 1][1]
+        p["body"] = live[new_s:new_e + 1]
+        for ln in p["body"]:
+            claimed.add(id(ln))
+        for ln in p["body"]:
+            t = txt(ln)
+            if t:
+                p["head"] = t
+                break
+        widened += 1
+    return problems, {"asked": asked, "widened": widened, "failed": failed}

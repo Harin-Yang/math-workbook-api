@@ -151,6 +151,13 @@ def load_extracted(stage_dir, filters):
             progress=lambda i, n: print(f"  LLM 판정 {i}/{n}", end="\r", file=sys.stderr))
         print(f"\nLLM 판정: 후보 {tally['asked']} -> 채택 {tally['accepted']} "
               f"(실패 {tally['failed']})", file=sys.stderr)
+        # 채택된 지문 문제는 여러 문단짜리일 수 있다 — 경계를 한 번 더 묻는다.
+        ask = LF.openai_ask()
+        problems, btally = LF.refine_boundaries(
+            problems, live, EX.txt, EX.line_gap, st.get("gap_thr"), ask,
+            progress=lambda i, n: print(f"  경계 질의 {i}", end="\r", file=sys.stderr))
+        print(f"경계 질의: {btally['asked']}건 -> 넓힘 {btally['widened']} "
+              f"(실패 {btally['failed']})", file=sys.stderr)
     else:
         problems, kept, dropped_x, live, st = EX.build(all_rows, pw)
 
