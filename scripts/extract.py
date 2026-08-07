@@ -338,7 +338,7 @@ def find_unmarked(live, marked, bands, gap_thr):
         x = rx(ln)
         if band is None or not isinstance(x, (int, float)):
             continue
-        if abs(x - band[0]) > band[1]:
+        if not any(abs(x - c) <= band[1] for c in band[0]):
             continue
 
         mf = med_font.get(fname)
@@ -452,6 +452,19 @@ def find_end(live, start, hard_end, kind, gap_thr=None):
 def build(rows, page_width):
     figmax = page_width * FIGURE_MAX_WIDTH_RATIO if page_width else None
 
+    # 0) Mathpix 가 같은 줄을 두 번 주는 경우가 있다 (같은 자리·같은 글, 실측).
+    #    그대로 두면 문제가 두 번 뽑히고 본문 글줄도 두 벌이 된다.
+    unique, seen_keys = [], set()
+    for ln in rows:
+        key = (ln.get("type"), ln.get("text"),
+               (ln.get("region") or {}).get("top_left_y"),
+               (ln.get("region") or {}).get("top_left_x"), ln.get("_page"))
+        if ln.get("text") and key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique.append(ln)
+    rows = unique
+
     # 1) 버릴 줄
     live, dropped_bg = [], 0
     for ln in rows:
@@ -529,6 +542,26 @@ def build(rows, page_width):
         cands.append({"idx": i, "line": ln, "name": m[0],
                       "raw": m[1], "kind": m[2]})
 
+    # 3-2) 약한 표기 안전장치 5) — '준비 학습' 코너의 번호는 문제가 아니다
+    #      (단원 도입 복습 문제, 기준 문제집 미수록. 실측: 공간도형 3쪽).
+    #      글자 크기로 가르면 마무리 문제(작은 판)까지 잘린다 — 코너 제목으로 가른다.
+    prep = re.compile(r"준\s*비\s*학\s*습|준\s*비\s*하\s*기")
+    filtered = []
+    for c in cands:
+        if c["name"] in WEAK_START:
+            under_prep = False
+            for k in range(c["idx"] - 1, max(0, c["idx"] - 40) - 1, -1):
+                ln2 = live[k]
+                if ln2.get("_file") != c["line"].get("_file"):
+                    break
+                if ln2.get("type") == "section_header" and txt(ln2):
+                    under_prep = bool(prep.search(txt(ln2)))
+                    break
+            if under_prep:
+                continue
+        filtered.append(c)
+    cands = filtered
+
     # 4) 파일별 x 대역 학습
     byfile = defaultdict(list)
     for c in cands:
@@ -542,18 +575,38 @@ def build(rows, page_width):
             bands[fname] = None
             continue
         b = Counter(int(x // 50) for x in xs)
-        top = b.most_common(1)[0][0]
-        bands[fname] = ((top + 0.5) * 50, 90)
+        top_count = b.most_common(1)[0][1]
+        # 본문 대역 하나만 배우면 들여쓰기가 다른 구역(중단원 마무리)의 문제가
+        # 통째로 떨어진다 (이차곡선 표준문제 7·9·10·11 실측). 후보가 2개 이상
+        # 모인 구간은 전부 대역으로 인정한다 — 외톨이 오탐만 거른다.
+        centers = [(bucket + 0.5) * 50 for bucket, count in b.items()
+                   if count >= 2 or count == top_count]
+        bands[fname] = (centers, 90)
+
+    def in_band(band, x):
+        if band is None or not isinstance(x, (int, float)):
+            return True
+        centers, tol = band
+        return any(abs(x - c) <= tol for c in centers)
 
     kept, dropped_x = [], []
     for c in cands:
-        band = bands.get(c["line"].get("_file"))
-        x = rx(c["line"])
-        if band is None or not isinstance(x, (int, float)) \
-                or abs(x - band[0]) <= band[1]:
+        if in_band(bands.get(c["line"].get("_file")), rx(c["line"])):
             kept.append(c)
         else:
             dropped_x.append(c)
+
+    # 같은 문제가 두 번 뽑히는 중복 제거 — 빈 껍데기 줄과 그 자식 글줄이
+    # 둘 다 시작으로 걸리면 바로 붙은 후보 두 개가 생긴다 (직각삼각형 실측).
+    deduped = []
+    for c in kept:
+        if deduped and c["idx"] - deduped[-1]["idx"] <= 2 \
+                and c["line"].get("_file") == deduped[-1]["line"].get("_file") \
+                and c.get("num") is not None \
+                and c.get("num") == deduped[-1].get("num"):
+            continue
+        deduped.append(c)
+    kept = deduped
 
     # 4-2) 표기 없이 지문으로 시작하는 문제 찾기 (기본 꿨짐)
     gap_thr = learn_gaps(live)
@@ -610,7 +663,7 @@ def build(rows, page_width):
         full_text = " ".join(txt(b) for b in p["body"])
         mentions = bool(FIGURE_REF.search(full_text))
         ys = [ry(b) for b in p["body"] if isinstance(ry(b), (int, float))]
-        if p["figs"] or not ys:
+        if not ys:
             continue
         y0, y1 = min(ys), max(ys)
         for f in figs_by_page.get((p["file"], p["page"]), []):
@@ -741,7 +794,7 @@ def render(problems, kept, dropped_x, live, rows, pw, out_md, samples, st):
     A("|---|---|---|---|")
     cnt = Counter(p["file"] for p in problems)
     for f, band in st["bands"].items():
-        A(f"| {str(f)[:36]} | {band[0] if band else '-'} | "
+        A(f"| {str(f)[:36]} | {','.join(str(int(c)) for c in band[0]) if band else '-'} | "
           f"{st.get('gap_thr', {}).get(f, '-')} | {cnt.get(f,0)} |")
     A("")
 
