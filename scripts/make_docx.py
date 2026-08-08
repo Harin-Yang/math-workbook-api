@@ -358,10 +358,40 @@ def merge_lines(body):
     """
     GLUE = {"continues_line_space": " ", "continues_line_no_space": ""}
     out = []
+    follow_row = None      # 빈칸(□) 과 같은 시각적 줄 — 뒤따르는 글을 이어 붙인다
     for b in body:
         t = EX.txt(b)
+        region = b.get("region") or {}
+        if b.get("type") == "form_field":
+            # 빈칸 상자 — text_display 가 '\begin{itemize}\item[□]' 같은 마크업으로
+            # 와서 표 규칙(그림 되돌리기)을 오발시킨다 (실측: 동아 미적분 3쪽).
+            # 글자 '□' 로 바꿔 앞 문장에 잇고, 같은 줄의 뒷글도 이어 붙인다.
+            target = None
+            for prev in reversed(out):
+                if "text" in prev:
+                    target = prev
+                    break
+                if "fig" not in prev:
+                    break
+            if target is not None:
+                target["text"] = (target["text"] + " □").strip()
+                target["lines"].append(b)
+            else:
+                out.append({"lines": [b], "text": "□"})
+            y = region.get("top_left_y")
+            h = region.get("height") or 0
+            if isinstance(y, (int, float)):
+                follow_row = (b.get("_page"), y - 10, y + h + 10)
+            continue
         is_fig = b.get("type") in EX.FIGURE_TYPES or EX.is_image_md(t)
         glue = GLUE.get(b.get("subtype") or "")
+        if follow_row is not None and not is_fig and glue is None and t:
+            y = region.get("top_left_y")
+            h = region.get("height") or 0
+            if isinstance(y, (int, float)) and b.get("_page") == follow_row[0] \
+                    and y < follow_row[2] and y + h > follow_row[1]:
+                glue = " "          # '□ 안에 알맞은 것을' — 같은 줄이면 잇는다
+        follow_row = None
         if not is_fig and glue is not None and out:
             # 잇는 대상은 마지막 '글' 단위 — 그림 줄이 문장 한가운데 끼어 있어도
             # 건너뛰고 잇는다. 그림에서 끊으면 '…도착했다고 / 한다' 처럼
