@@ -362,13 +362,23 @@ def merge_lines(body):
         t = EX.txt(b)
         is_fig = b.get("type") in EX.FIGURE_TYPES or EX.is_image_md(t)
         glue = GLUE.get(b.get("subtype") or "")
-        if (not is_fig and glue is not None and out
-                and "text" in out[-1]):
-            if glue and JOSA_HEAD.match(t):
-                glue = ""      # '변화' + '를 보이는' -> '변화를 보이는'
-            out[-1]["text"] = (out[-1]["text"] + glue + t).strip()
-            out[-1]["lines"].append(b)
-            continue
+        if not is_fig and glue is not None and out:
+            # 잇는 대상은 마지막 '글' 단위 — 그림 줄이 문장 한가운데 끼어 있어도
+            # 건너뛰고 잇는다. 그림에서 끊으면 '…도착했다고 / 한다' 처럼
+            # 문단이 갈라진다 (실측: 벡터 18쪽 서술형 14).
+            target = None
+            for prev in reversed(out):
+                if "text" in prev:
+                    target = prev
+                    break
+                if "fig" not in prev:
+                    break
+            if target is not None:
+                if glue and JOSA_HEAD.match(t):
+                    glue = ""      # '변화' + '를 보이는' -> '변화를 보이는'
+                target["text"] = (target["text"] + glue + t).strip()
+                target["lines"].append(b)
+                continue
         out.append({"fig": b} if is_fig else {"lines": [b], "text": t})
     return out
 
