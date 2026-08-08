@@ -635,8 +635,12 @@ def build(rows, page_width):
             c["num_fixed"] = False
             continue
         if not str(c["raw"]).strip().isdigit():   # '문제 (?)' 처럼 번호가 오독된 것
-            c["num"] = None
-            c["num_fixed"] = False
+            # 같은 파일의 '문제' 사슬에서 다음 번호를 이어받는다 (화질 오독 복구).
+            chain = prev.get((c["line"].get("_file"), "문제"))
+            c["num"] = (chain + 1) if chain is not None else None
+            c["num_fixed"] = True
+            if c["num"] is not None:
+                prev[(c["line"].get("_file"), "문제")] = c["num"]
             continue
         key = (c["line"].get("_file"), c["name"])
         num, fixed = fix_number(c["raw"], prev.get(key))
