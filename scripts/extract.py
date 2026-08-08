@@ -58,6 +58,14 @@ START_PATTERNS = [
     ("탐구", re.compile(r"^\s*(?:탐구|밤구)\s*(\d{1,3})"),           "탐구"),
     ("유형", re.compile(r"^\s*유형\s*(\d{1,3})"),                 "유형"),
     ("확인", re.compile(r"^\s*확인\s*문제\s*(\d{1,3})"),           "문제"),
+    # 마무리 코너 표기 (신사고 실측: 추론 6 / 서술형 7 / 문제 해결 10 / 의사소통 10).
+    # '의사솔동'·'추롤' 은 OCR 오독 형태다.
+    ("서술형", re.compile(r"^\s*서술형\s*(\d{1,3})"),             "문제"),
+    ("추론", re.compile(r"^\s*추[론롤]\s*(\d{1,3})"),             "문제"),
+    ("문제해결", re.compile(r"^\s*문제\s*해결\s*(\d{1,3})"),      "문제"),
+    ("의사소통", re.compile(r"^\s*의사[소솔]\s*[통동]\s*(\d{1,3})"), "문제"),
+    # 번호가 수식 물음표로 오독된 '문제 \(?\)' — 번호 없는 문제로 받는다.
+    ("문제물음", re.compile(r"^\s*문제\s*\\\((\s*\?\s*)\\\)"), "문제"),
     ("두자리", re.compile(r"^\s*(0\d)(?!\d)"),                    "번호"),
     # 타 출판사 (v9). '01.' 은 위의 두자리가 먼저 맞으므로 여기는 점 있는 한 자리부터.
     ("번호점", re.compile(r"^\s*(\d{1,2})\s*[.．]\s*(?!\d)"),      "번호"),
@@ -69,7 +77,8 @@ WEAK_START = {"번호점", "번호"}
 
 # 화면·문서에 보여 줄 표기 이름. '두자리 1' 같은 내부 이름을 내보내지 않는다.
 DISPLAY_NAME = {"두자리": "문제", "번호": "문제", "번호점": "문제", "확인": "문제",
-                "지문": "문제"}
+                "지문": "문제", "문제물음": "문제", "문제해결": "문제",
+                "추론": "문제", "의사소통": "문제", "서술형": "서술형"}
 
 
 def display_name(name):
@@ -77,6 +86,22 @@ def display_name(name):
 
 # 번호 표기처럼 보여도 '…란 무엇일까' 로 이어지면 개념 꼭지 제목이다.
 # (기하 교과서의 '1 타원이란 무엇일까' 가 문제로 잡혔다. 물음 꼬리는 앞머리에 온다)
+# 창(window)을 이어 붙여 어미를 찾을 때 쓰는 느슨한 판 — 어미가 줄 끝에서
+# 갈라지거나('구하시' + '오.') 단서 괄호가 다음 줄로 넘어가면 줄 단위 검사는 놓친다.
+ORDER_END_ANY = re.compile(r"(?:시오|하라|보자|구해라|말해라)\s*[.．,，)）]")
+
+
+def window_has_order_end(live, start, count, file_name):
+    """start 부터 count 줄을 (같은 파일 안에서) 붙여 읽어 명령형 어미를 찾는다."""
+    parts = []
+    for k in range(start, min(start + count, len(live))):
+        if live[k].get("_file") != file_name:
+            break
+        parts.append(txt(live[k]))
+    joined = "".join(parts)
+    return bool(ORDER_END.search(joined)) or bool(ORDER_END_ANY.search(joined))
+
+
 CONCEPT_HEAD = re.compile(r"^\s*\d{1,2}\s+.{0,24}(일까|할까)")
 
 # 번호 뒤에 이런 말이 오면 표기가 아니라 지문 속 숫자다. '5 개이다', '10 이하의 …'
@@ -148,6 +173,8 @@ FIGURE_MAX_WIDTH_RATIO = 0.75
 MAX_BODY_LINES = 60
 MAX_PAGE_SPAN = 1
 FIGURE_GUESS_RANGE = 400     # 발문 위아래 이 범위 안의 그림을 후보로 본다
+FIGURE_NEAR_RANGE = 120      # 그림 언급이 없어도 이만큼 붙어 있으면 곁그림으로 본다
+FIGURE_SHARE_RANGE = 60      # 이웃 문제의 그림을 나눠 받는 건 이만큼 붙었을 때만
 
 
 def collect_pages(obj, out=None, hint=None):
@@ -260,10 +287,9 @@ def fix_number(raw, prev):
     want = (prev + 1) if prev is not None else None
     if want is not None and want in cands:
         pick = want
-    elif 1 in cands:
-        pick = 1
     else:
-        pick = cands[0]
+        # 사슬 근거 없이 자르지 않는다 — '10'을 1로 만드는 과잉 교정이 있었다 (실측).
+        pick = cands[-1]
     return pick, (pick != cands[-1])
 
 
@@ -352,14 +378,7 @@ def find_unmarked(live, marked, bands, gap_thr):
         if not thr or g is None or g < thr:
             continue
 
-        ok = False
-        for k in range(i, min(i + UNMARKED_LOOK, len(live))):
-            if live[k].get("_file") != fname:
-                break
-            if ORDER_END.search(txt(live[k])):
-                ok = True
-                break
-        if not ok:
+        if not window_has_order_end(live, i, UNMARKED_LOOK, fname):
             continue
 
         out.append({"idx": i, "line": ln, "name": "지문",
@@ -520,14 +539,8 @@ def build(rows, page_width):
             if CONCEPT_HEAD.match(txt(ln)):
                 continue
             # 3) 몇 줄 안에 명령형 어미가 없으면 목차나 소제목이다.
-            ok = False
-            for k in range(i, min(i + WEAK_LOOK, len(live))):
-                if live[k].get("_file") != ln.get("_file"):
-                    break
-                if ORDER_END.search(txt(live[k])):
-                    ok = True
-                    break
-            if not ok:
+            #    어미가 줄 끝에서 갈라지므로 창을 붙여 읽어 검사한다.
+            if not window_has_order_end(live, i, WEAK_LOOK, ln.get("_file")):
                 continue
             # 4) 바로 위가 활동 도입(…알아보자)이면 활동 소문항이다.
             intro = False
@@ -621,6 +634,10 @@ def build(rows, page_width):
             c["num"] = None
             c["num_fixed"] = False
             continue
+        if not str(c["raw"]).strip().isdigit():   # '문제 (?)' 처럼 번호가 오독된 것
+            c["num"] = None
+            c["num_fixed"] = False
+            continue
         key = (c["line"].get("_file"), c["name"])
         num, fixed = fix_number(c["raw"], prev.get(key))
         c["num"] = num
@@ -656,28 +673,54 @@ def build(rows, page_width):
         if ln.get("type") in FIGURE_TYPES:
             figs_by_page[(ln.get("_file"), ln.get("_page"))].append(ln)
 
+    # 곁그림 추정은 두 번에 나눠 한다.
+    #   1차: 임자 없는 그림만 (언급 있으면 여유 400, 없으면 바짝 붙은 120).
+    #   2차: 그래도 그림이 없는 문제는 이웃이 쓰는 그림을 나눠 받는다 (바짝 붙은
+    #        것만, 그림 하나당 최대 두 문제) — '(1)(2)' 가 곁그림 하나를 공유하는
+    #        배치 (실측: 공간도형 12쪽 설명하기 1·2). 한 번에 하면 언급 있는 문제가
+    #        이웃 그림까지 빨아들인다 (실측: 문제 4 — 제 그림이 OCR 에 없던 경우).
+    fig_use = Counter(id(f) for p in problems for f in p["figs"])
+    spans = {}
     for p in problems:
-        p["figs_guess"] = []
-        # 그림 언급은 본문 전체에서 찾는다 — 머리 90자만 보면
-        # '…를 오른쪽 그림과 같이' 처럼 둘째 줄부터 나오는 언급을 놓친다 (실측).
         full_text = " ".join(txt(b) for b in p["body"])
-        mentions = bool(FIGURE_REF.search(full_text))
         ys = [ry(b) for b in p["body"] if isinstance(ry(b), (int, float))]
-        if not ys:
-            continue
-        y0, y1 = min(ys), max(ys)
+        if ys:
+            spans[id(p)] = (min(ys), max(ys), bool(FIGURE_REF.search(full_text)))
+        p["figs_guess"] = []
+
+    def near_figs(p, margin, max_use):
+        got = []
+        info = spans.get(id(p))
+        if not info:
+            return got
+        y0, y1, _m = info
+        own = {id(f) for f in p["figs"]} | {id(f) for f in p["figs_guess"]}
         for f in figs_by_page.get((p["file"], p["page"]), []):
-            if id(f) in used_fig:
+            if id(f) in own or fig_use[id(f)] > max_use:
                 continue
             fy = ry(f)
             if not isinstance(fy, (int, float)):
                 continue
-            # 발문이 그림을 가리키면 위아래 여유까지, 아니면 문제 세로 구간 안에
-            # 놓인 그림만 (오른쪽 열 그림은 줄 순서만 뒤로 밀려 본문 밖에 있다).
-            margin = FIGURE_GUESS_RANGE if mentions else 0
-            if y0 - margin <= fy <= y1 + margin:
-                p["figs_guess"].append(f)
-        for f in p["figs_guess"]:
+            distance = max(y0 - (fy + (rh(f) or 0)), fy - y1, 0)
+            if distance <= margin:
+                got.append(f)
+        return got
+
+    for p in problems:                       # 1차 — 임자 없는 그림
+        info = spans.get(id(p))
+        if not info:
+            continue
+        margin = FIGURE_GUESS_RANGE if info[2] else FIGURE_NEAR_RANGE
+        for f in near_figs(p, margin, max_use=0):
+            p["figs_guess"].append(f)
+            fig_use[id(f)] += 1
+            used_fig.add(id(f))
+    for p in problems:                       # 2차 — 그림 없는 문제만 나눠 받기
+        if p["figs"] or p["figs_guess"]:
+            continue
+        for f in near_figs(p, FIGURE_SHARE_RANGE, max_use=1):
+            p["figs_guess"].append(f)
+            fig_use[id(f)] += 1
             used_fig.add(id(f))
 
     orphan = [ln for ln in live
