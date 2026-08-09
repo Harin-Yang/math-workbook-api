@@ -112,9 +112,10 @@ def filter_unmarked(problems, txt, judge, progress=None):
     """
     kept = []
     asked = accepted = failed = 0
-    total = sum(1 for p in problems if p["name"] == "지문")
+    JUDGED = ("지문", "활동의심")   # 활동의심 = '…해 보자' 뿐인 약한 표기 (활동/문제 경계)
+    total = sum(1 for p in problems if p["name"] in JUDGED)
     for problem in problems:
-        if problem["name"] != "지문":
+        if problem["name"] not in JUDGED:
             kept.append(problem)
             continue
         text = paragraph_text(problem, txt)

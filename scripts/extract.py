@@ -78,7 +78,8 @@ WEAK_START = {"번호점", "번호"}
 # 화면·문서에 보여 줄 표기 이름. '두자리 1' 같은 내부 이름을 내보내지 않는다.
 DISPLAY_NAME = {"두자리": "문제", "번호": "문제", "번호점": "문제", "확인": "문제",
                 "지문": "문제", "문제물음": "문제", "문제해결": "문제",
-                "추론": "문제", "의사소통": "문제", "서술형": "서술형"}
+                "추론": "문제", "의사소통": "문제", "서술형": "서술형",
+                "활동의심": "문제"}
 
 
 def display_name(name):
@@ -538,6 +539,9 @@ def build(rows, page_width):
             # 2-2) '…란 무엇일까' 로 이어지면 개념 꼭지 제목이다.
             if CONCEPT_HEAD.match(txt(ln)):
                 continue
+            # 2-3) 번호 뒤가 '풀이/답/증명' 이면 풀이 조각이다 (지학사 실측).
+            if re.match(r"^\s*\d{1,2}\s*[.．)]?\s*(풀이|답|증명)\b", txt(ln)):
+                continue
             # 3) 몇 줄 안에 명령형 어미가 없으면 목차나 소제목이다.
             #    어미가 줄 끝에서 갈라지므로 창을 붙여 읽어 검사한다.
             if not window_has_order_end(live, i, WEAK_LOOK, ln.get("_file")):
@@ -681,11 +685,17 @@ def build(rows, page_width):
             joined = "".join(txt(b) for b in p["body"])
             # 의문형(…인가?)과 '…여라/어라' 어미도 발문이다 (지학사 실측 —
             # 좁게 잡으면 진짜 문제가 같이 죽는다).
-            asks = bool(re.search(r"[?？]|[여아으]라[.．]?|시오|하라|보자", joined))
-            if not (ORDER_END.search(joined) or ORDER_END_ANY.search(joined) or asks):
+            strong = bool(re.search(r"[?？]|[여아으]라[.．]?|시오|구해라|말해라", joined)
+                          or ORDER_END.search(joined) or ORDER_END_ANY.search(joined))
+            soft = "보자" in joined
+            if not strong and not soft:
                 for f in p["figs"]:
                     used_fig.discard(id(f))
                 continue
+            if not strong and soft:
+                # '…해 보자' 뿐인 것은 활동(토론·발표·추측)과 진짜 문제가 섞여
+                # 룰로 못 가른다 — LLM 판정 대상으로 넘긴다 (채점판 v2 잔여 최다 유형).
+                p["name"] = "활동의심"
         survivors.append(p)
     problems = survivors
 
