@@ -204,7 +204,10 @@ def refine_boundaries(problems, live, txt, line_gap, gap_thr, ask, progress=None
     # 지문 + 약한 표기(번호·번호점) — 활동 상자('찾아보기 1, 2')의 소문항 하나만
     # 잡히는 경우가 있다 (기하 기준 31 실측). 앞줄이 다른 문제에 속하면
     # 물어볼 이웃이 없어 질의가 생기지 않으므로 보통 문제에는 비용이 안 든다.
-    targets = [p for p in problems if p["name"] in ("지문", "번호", "번호점")]
+    # 활동의심도 묻는다 — 이름만 바뀐 약한 표기라, 빼면 도입 문단을 못 넓혀
+    # 기준에 실린 활동 문제가 조각으로 남아 미검출이 된다 (신사고 미적분 실측 2건).
+    targets = [p for p in problems
+               if p["name"] in ("지문", "번호", "번호점", "활동의심")]
     asked = widened = failed = 0
     for p in targets:
         file_name = p["body"][0].get("_file")
@@ -215,8 +218,13 @@ def refine_boundaries(problems, live, txt, line_gap, gap_thr, ask, progress=None
             continue
         before = _block_ranges(live, txt, line_gap, thr, claimed, file_name, s - 1, -1)
         after = _block_ranges(live, txt, line_gap, thr, claimed, file_name, e + 1, +1)
-        before = [b for b in before if _block_text(live, txt, *b)]
-        after = [b for b in after if _block_text(live, txt, *b)]
+        # 풀이·증명·답으로 시작하는 블록은 문제의 일부일 수 없다 — 이웃 후보에서
+        # 뺀다 (지학사 실측: 루나가 예제 풀이를 다음 문제 앞에 붙였다).
+        _sol = re.compile(r"^\s*(풀이|증명|답)\b")
+        before = [b for b in before
+                  if _block_text(live, txt, *b) and not _sol.match(_block_text(live, txt, *b))]
+        after = [b for b in after
+                 if _block_text(live, txt, *b) and not _sol.match(_block_text(live, txt, *b))]
         if not before and not after:
             continue
 

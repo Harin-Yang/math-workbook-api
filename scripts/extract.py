@@ -118,6 +118,10 @@ WEAK_LOOK = 8
 # 바로 위 몇 줄이 '…알아보자' 같은 활동 도입으로 끝나면, 뒤따르는 번호는
 # 문제가 아니라 활동의 소문항이다 (신사고 '…경우를 알아보자' 밑의 1, 2).
 ACTIVITY_INTRO = re.compile(r"(알아|살펴|생각해|확인해|정리해)\s*보자\s*[.．]?\s*$")
+
+# 같은 쪽 위에 복습 코너 머리가 있으면 아래 번호들은 이전 학년 복습이다
+# (지학사 '스스로 준비하는 중단원' 실측 — 발문은 진짜 문제와 똑같다).
+REVIEW_CORNER = re.compile(r"스스로\s*준\W{0,2}비|준\W{0,2}비\W{0,2}학\W{0,2}습")
 WEAK_BACK = 3
 
 # 발문 끝을 알리는 명령형 어미. 뒤에 '(단, a>0)' 이 붙어도 끝으로 본다.
@@ -486,6 +490,11 @@ def build(rows, page_width):
     rows = unique
 
     # 1) 버릴 줄
+    review_pages = set()
+    for ln in rows:
+        if REVIEW_CORNER.search(txt(ln) or ""):
+            review_pages.add((ln.get("_file"), ln.get("_page")))
+
     live, dropped_bg = [], 0
     for ln in rows:
         if ln.get("type") in DROP_TYPES:
@@ -540,7 +549,8 @@ def build(rows, page_width):
             if CONCEPT_HEAD.match(txt(ln)):
                 continue
             # 2-3) 번호 뒤가 '풀이/답/증명' 이면 풀이 조각이다 (지학사 실측).
-            if re.match(r"^\s*\d{1,2}\s*[.．)]?\s*(풀이|답|증명)\b", txt(ln)):
+            if re.match(r"^\s*\d{1,2}\s*[.．)]?\s*(풀이|답|증명)\b"
+                        r"|^\s*풀이\s*[(（]", txt(ln)):
                 continue
             # 3) 몇 줄 안에 명령형 어미가 없으면 목차나 소제목이다.
             #    어미가 줄 끝에서 갈라지므로 창을 붙여 읽어 검사한다.
@@ -555,6 +565,11 @@ def build(rows, page_width):
                     intro = True
                     break
             if intro:
+                continue
+            # 4-2) 복습 코너 머리가 있는 쪽의 번호는 이전 학년 복습이다.
+            #      머리줄 type 이 page_info 라 live 에는 없다 — rows 에서 모은
+            #      review_pages 로 쪽 단위 판정한다 (지학사 실측).
+            if (ln.get("_file"), ln.get("_page")) in review_pages:
                 continue
         cands.append({"idx": i, "line": ln, "name": m[0],
                       "raw": m[1], "kind": m[2]})
@@ -682,11 +697,24 @@ def build(rows, page_width):
     survivors = []
     for p in problems:
         if p["name"] in weakish:
+            # 몸통 첫 줄이 '풀이 (…' 면 예제 풀이 조각이다 (지학사 실측 —
+            # 표기 경로에 따라 후보 시점 검사(2-3)를 비껴가는 경우가 있다).
+            first = next((txt(b) for b in p["body"] if txt(b)), "")
+            if re.match(r"^\s*풀이\s*[(（]", first):
+                for f in p["figs"]:
+                    used_fig.discard(id(f))
+                continue
             joined = "".join(txt(b) for b in p["body"])
+            # 그림 마크다운의 URL(?height=…)이 의문형 어미로 오인된다 (지학사 실측:
+            # 그림 붙은 약한 표기가 전부 무사통과). 어미 검사 전에 걷어낸다.
+            joined = re.sub(r"!\[[^\]]*\]\([^)]{0,300}\)|https?://\S+", "", joined)
             # 의문형(…인가?)과 '…여라/어라' 어미도 발문이다 (지학사 실측 —
             # 좁게 잡으면 진짜 문제가 같이 죽는다).
-            strong = bool(re.search(r"[?？]|[여아으]라[.．]?|시오|구해라|말해라", joined)
-                          or ORDER_END.search(joined) or ORDER_END_ANY.search(joined))
+            # ⚠ 여기서 ORDER_END(_ANY) 를 쓰면 안 된다 — 둘 다 '보자' 를 포함해서
+            # '…해 보자.' 활동이 강한 어미로 통과, 활동의심 경로가 죽는다
+            # (채점판 v4 실측: 신사고 미적분 탐구 4건이 루나를 안 거치고 살아남음).
+            strong = bool(re.search(
+                r"[?？]|[여아으]라[.．]?|하라|시오|구해라|말해라", joined))
             soft = "보자" in joined
             if not strong and not soft:
                 for f in p["figs"]:
