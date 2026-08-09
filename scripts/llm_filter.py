@@ -206,8 +206,13 @@ def refine_boundaries(problems, live, txt, line_gap, gap_thr, ask, progress=None
     # 물어볼 이웃이 없어 질의가 생기지 않으므로 보통 문제에는 비용이 안 든다.
     # 활동의심도 묻는다 — 이름만 바뀐 약한 표기라, 빼면 도입 문단을 못 넓혀
     # 기준에 실린 활동 문제가 조각으로 남아 미검출이 된다 (신사고 미적분 실측 2건).
+    def _fill_in(p):
+        # 빈칸 문제는 발문 어미("써넣으시오.") 뒤로 유도 과정(□ 포함)이 이어져
+        # 어미 절단으로 잘린다 (동아 실측: 정적분 넓이 유도) — 표기가 강해도 묻는다.
+        return any("써넣" in (txt(l) or "") for l in p["body"])
+
     targets = [p for p in problems
-               if p["name"] in ("지문", "번호", "번호점", "활동의심")]
+               if p["name"] in ("지문", "번호", "번호점", "활동의심") or _fill_in(p)]
     asked = widened = failed = 0
     for p in targets:
         file_name = p["body"][0].get("_file")
