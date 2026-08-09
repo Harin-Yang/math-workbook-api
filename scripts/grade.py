@@ -343,6 +343,38 @@ def rescue(pairs, rg, eg, n_ref, n_ext, rescue_sim):
             added += 1
 
     pairs.sort(key=lambda t: t[0])
+
+    # 3단 — 포함율 구제. 추출이 긴 기준 문제의 조각(또는 그 반대)이면
+    # 자카드는 크기 불일치로 0.2~0.5 에 깔린다 (천재이 실측: 반례 활동
+    # 머리 110자 vs 기준 450자 = 0.21). 교집합/작은쪽 으로 다시 잰다.
+    # 작은 뼈대끼리의 우연 일치를 막으려 교집합 최소 10그램을 요구한다.
+    CONTAIN_SIM = 0.6
+    CONTAIN_MIN_INTER = 10
+    cand3 = []
+    for i in [i2 for i2 in range(n_ref) if i2 not in used_r]:
+        gi = rg[i]
+        if not gi:
+            continue
+        for j in [j2 for j2 in range(n_ext) if j2 not in used_e]:
+            gj = eg[j]
+            if not gj:
+                continue
+            inter = len(gi & gj)
+            if inter < CONTAIN_MIN_INTER:
+                continue
+            c = inter / min(len(gi), len(gj))
+            if c >= CONTAIN_SIM:
+                jac = inter / (len(gi) + len(gj) - inter)
+                cand3.append((c, jac, i, j))
+    cand3.sort(reverse=True)
+    for c, jac, i, j in cand3:
+        if i in used_r or j in used_e:
+            continue
+        used_r.add(i)
+        used_e.add(j)
+        pairs.append((i, j, jac))
+        added += 1
+
     return pairs, added
 
 
@@ -420,6 +452,12 @@ def judge(refs, exts, keep_math, min_sim, ok, gap_max, rescue_sim=RESCUE_SIM):
                     s = inter / (len(gi) + len(gj) - inter)
                     if s > best:
                         best = s
+                    # 포함율 — 짝을 이미 뺏긴 중복 조각은 자카드가 깔린다
+                    # (천재이 실측: 활동 1단계 조각 vs 기준 378자).
+                    if inter >= 10:
+                        c = inter / min(len(gi), len(gj))
+                        if c > best:
+                            best = c
         if best >= DUP_SIM:
             dup_pairs += 1
             continue
