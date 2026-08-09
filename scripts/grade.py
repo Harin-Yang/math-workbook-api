@@ -91,7 +91,12 @@ def normalize(t, keep_math=False):
     t = t.replace("$", " ")
     if keep_math:
         return NOT_KEEP.sub("", t)
-    return "".join(HANGUL.findall(t))
+    s = "".join(HANGUL.findall(t))
+    # 어미 통일 — 편집본이 '하라'체를 '하시오'체로 고쳐 쓴다 (지학사 실측:
+    # 뼈대 7자 문제에서 어미 한 글자 차이가 담김 0.67 로 떨어져 가짜 잘림 15건).
+    # 어미는 문제 구분에 정보가 없으니 양쪽 다 '하라' 로 눌러 편향을 없앤다.
+    s = s.replace("하시오", "하라").replace("하여라", "하라").replace("푸시오", "풀라")
+    return s
 
 
 def grams(s, n=3):
