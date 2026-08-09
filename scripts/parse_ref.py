@@ -46,11 +46,22 @@ from pypdf import PdfReader
 #   '107.107)' 과 '107)' 을 모두 잡는다.
 # 일부 편집본(교학사 등)은 글자마다 공백이 끼어 '10. 1 0 )' 처럼 숫자 안에도
 # 공백이 들어간다 — 숫자 사이 공백을 허용하고, 쓸 때는 공백을 걷어낸다.
-Q_ANY = re.compile(r"(?<![\d.])(?:(\d(?:\s?\d){0,2})\s*\.\s?)?(\d(?:\s?\d){0,2})\s*\)")
+# 동아 편집본은 괄호 대신 마침표로 닫는다 ('236.2 36.') — 두 번호가 다 있을 때만
+# 마침표 닫힘을 인정한다 (홑 'N.' 은 소수·목차와 헷갈려 너무 위험하다).
+Q_ANY = re.compile(
+    r"(?<![\d.])(?:(\d(?:\s?\d){0,2})\s*\.\s?)?(\d(?:\s?\d){0,2})\s*\)"
+    r"|(?<![\d.])(\d(?:\s?\d){0,2})\s*\.\s?(\d(?:\s?\d){0,2})\s*\.(?!\d)")
 
 
 def _num(raw):
     return int(re.sub(r"\s", "", raw))
+
+
+def _q_groups(m):
+    """Q_ANY 짝에서 (표시번호, 각주번호) 원문을 꺼낸다 — 어느 갈래로 맞았든."""
+    if m.group(2) is not None:
+        return m.group(1), m.group(2)
+    return m.group(3), m.group(4)
 # 소단원 제목. 두 형태를 모두 본다.
 #   '1-1-1. 여러 가지 순열'  (번호가 앞)
 #   '여러 가지 순열1-1-1.'    (번호가 뒤 - 교학사 편집)
@@ -131,7 +142,7 @@ def find_solution_page(pages):
 
     max_seen = 0
     for i, lines in enumerate(pages):
-        nums = [_num(m.group(2)) for s in lines for m in Q_ANY.finditer(s)]
+        nums = [_num(_q_groups(m)[1]) for s in lines for m in Q_ANY.finditer(s)]
         if not nums:
             continue
         # 본문 안에 '4)' 같은 게 하나 섞여 있을 수 있으니
@@ -268,8 +279,8 @@ def parse(path):
     # 번호가 1씩 커지는 가장 긴 사슬만 문제 시작으로 인정한다
     cands = []
     for mm in Q_ANY.finditer(stream):
-        a = mm.group(1)
-        cands.append((mm, _num(a) if a else None, _num(mm.group(2))))
+        a, b = _q_groups(mm)
+        cands.append((mm, _num(a) if a else None, _num(b)))
     starts = pick_chain(cands)
     both = sum(1 for _m, a, b in starts if a is not None and a == b)
 
@@ -324,10 +335,11 @@ def parse(path):
         #    쪽마다 단원명이 달라 반복 판정을 비껴간다. 문장 끝 뒤에서만 자른다.
         text = re.sub(r"(?<=[.．])\s*[가-힣 ]{0,8}내신대비.*$", "", text)
 
+        a_raw, b_raw = _q_groups(mm)
         problems.append({
-            "num": _num(mm.group(2)),
-            "display": _num(mm.group(1)) if mm.group(1) else None,
-            "footnote": _num(mm.group(2)),
+            "num": _num(b_raw),
+            "display": _num(a_raw) if a_raw else None,
+            "footnote": _num(b_raw),
             "section": section,
             "block": block,
             "page": page,
