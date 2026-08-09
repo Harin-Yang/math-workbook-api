@@ -42,7 +42,9 @@ MIN_SIM = 0.35        # 이 아래는 같은 문제로 보지 않는다
 OK = 0.85             # 완전일치로 인정할 겹침 비율
 MIN_CHARS = 6         # 한글 뼈대가 이보다 짧으면 판정 보류
 GAP_MAX = 15          # 매칭된 두 문제 사이가 이보다 벌어지면 '범위 밖'
-RESCUE_SIM = 0.55     # 순서가 어긋나도 이만큼 닮았으면 같은 문제로 인정
+RESCUE_SIM = 0.45     # 순서가 어긋나도 이만큼 닮았으면 같은 문제로 인정 (0.55에서 낮춤 — '빈칸에 알맞은 수/것' 한 글자 차이 실측)
+RESCUE_ORDER_SIM = 0.38   # 순서까지 맞는 자리면 이 문턱으로 낮춘다 (한 글자 차이 짝)
+DUP_SIM = 0.6             # 짝은 없어도 기준에 이만큼 닮은 문제가 있으면 오검출이 아니다
 
 IMG_MD = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 INC_GRAPHICS = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{[^}]*\}")
@@ -305,6 +307,41 @@ def rescue(pairs, rg, eg, n_ref, n_ext, rescue_sim):
         pairs.append((i, j, s))
         added += 1
 
+    # 2단 — 순서에 맞는 자리면 문턱을 낮춰 한 번 더 건진다.
+    # '빈칸에 알맞은 수/것' 처럼 한 글자 차이로 0.5 언저리에 걸리는 진짜 짝이
+    # 짝짓기 실패 -> 오검출+미검출 쌍으로 찍히던 아티팩트 (채점판 v3 실측).
+    # 이웃한 짝의 기준 번호 사이에 끼는 자리만 허용하므로 자리 근거가 있다.
+    pairs.sort(key=lambda t: t[1])
+    for j in [j2 for j2 in range(n_ext) if j2 not in used_e]:
+        prev_r, next_r = -1, n_ref
+        for pi, pj, _s in pairs:
+            if pj < j:
+                prev_r = max(prev_r, pi)
+            elif pj > j:
+                next_r = min(next_r, pi)
+        gj = eg[j]
+        if not gj:
+            continue
+        best = (0.0, None)
+        for i in range(prev_r + 1, next_r):
+            if i in used_r:
+                continue
+            gi = rg[i]
+            if not gi:
+                continue
+            inter = len(gi & gj)
+            if not inter:
+                continue
+            s = inter / (len(gi) + len(gj) - inter)
+            if s > best[0]:
+                best = (s, i)
+        if best[1] is not None and best[0] >= RESCUE_ORDER_SIM:
+            used_r.add(best[1])
+            used_e.add(j)
+            pairs.append((best[1], j, best[0]))
+            pairs.sort(key=lambda t: t[1])
+            added += 1
+
     pairs.sort(key=lambda t: t[0])
     return pairs, added
 
@@ -356,14 +393,44 @@ def judge(refs, exts, keep_math, min_sim, ok, gap_max, rescue_sim=RESCUE_SIM):
         "ref_section": refs[i]["section"], "ref_head": refs[i]["text"][:110],
     } for i in sorted(scope) if i not in {p[0] for p in pairs}]
 
-    false = [{
-        "ext_name": exts[j]["name"], "ext_num": exts[j]["num"],
-        "ext_file": exts[j]["file"], "ext_page": exts[j]["page"],
-        "ext_lines": exts[j]["lines"], "ext_reason": exts[j]["reason"],
-        "ext_head": exts[j]["text"][:110],
-    } for j in range(len(exts)) if j not in matched_ext]
+    # 한글이 거의 없는 추출(수식뿐인 소문항 조각)은 뼈대 비교가 불가능하다 —
+    # 오검출로 세면 지표가 왜곡된다 (실측: '(1) log 3.15'). 오검출에서 뺀다.
+    # 또 짝은 못 지었어도 기준 어딘가에 충분히 닮은 문제(0.6+)가 있으면
+    # '없는 문제를 만들어 낸 것'이 아니다 — 편집본 재배열·동일 뼈대 중복 때문에
+    # 1:1 짝짓기가 못 가른 것 (실측: '다음 식을 간단히 하시오' 기준 18건).
+    # 오검출이 아니라 짝중복으로 따로 센다.
+    false = []
+    dup_pairs = 0
+    for j in range(len(exts)):
+        if j in matched_ext or len(en[j]) < MIN_CHARS:
+            continue
+        # 전문이 경계 넘침으로 뒤 본문을 삼키면 뼈대가 희석돼 닮음이 안 잡힌다
+        # (실측: '다음 식을 간단히 하시오' 전문 1031자 best 0.07, 앞머리 110자 best 1.00).
+        # 전문과 앞머리 두 뼈대 중 높은 쪽으로 판단한다.
+        gj_head = grams(normalize(exts[j]["text"][:110]))
+        best = 0.0
+        for gj in (eg[j], gj_head):
+            if not gj:
+                continue
+            for gi in rg:
+                if not gi:
+                    continue
+                inter = len(gi & gj)
+                if inter:
+                    s = inter / (len(gi) + len(gj) - inter)
+                    if s > best:
+                        best = s
+        if best >= DUP_SIM:
+            dup_pairs += 1
+            continue
+        false.append({
+            "ext_name": exts[j]["name"], "ext_num": exts[j]["num"],
+            "ext_file": exts[j]["file"], "ext_page": exts[j]["page"],
+            "ext_lines": exts[j]["lines"], "ext_reason": exts[j]["reason"],
+            "ext_head": exts[j]["text"][:110],
+        })
 
-    return results, missed, false, scope, rescued
+    return results, missed, false, scope, rescued, dup_pairs
 
 
 def score_figs(results):
@@ -415,7 +482,7 @@ def score_figs(results):
     return out, cases
 
 
-def score_of(results, missed, false, scope, refs, exts):
+def score_of(results, missed, false, scope, refs, exts, dup_pairs=0):
     c = Counter(r["verdict"] for r in results)
     n_scope = len(scope)
     return {
@@ -429,6 +496,7 @@ def score_of(results, missed, false, scope, refs, exts):
         "판정보류": c.get("판정보류", 0),
         "미검출": len(missed),
         "오검출": len(false),
+        "짝중복": dup_pairs,
         "정확도": round(c.get("완전일치", 0) / n_scope, 4) if n_scope else 0.0,
         "누락률": round(len(missed) / n_scope, 4) if n_scope else 0.0,
         "오검출률": round(len(false) / len(exts), 4) if exts else 0.0,
@@ -463,7 +531,7 @@ def append_history(path, entry):
 def delta_str(now, before, key, lower_is_better):
     if not before or key not in before.get("score", {}):
         return "-"
-    d = now[key] - before["score"][key]
+    d = now.get(key, 0) - before["score"][key]
     if abs(d) < 1e-9:
         return "0"
     mark = ""
@@ -507,12 +575,13 @@ def report(out_md, tag, refd, run_names, score, before, results, missed,
         ("판정보류", "판정보류", True),
         ("미검출", "미검출", True),
         ("오검출", "오검출", True),
+        ("짝중복 (기준에 닮은 문제 있음)", "짝중복", False),
         ("정확도", "정확도", False),
         ("누락률 (목표 0)", "누락률", True),
         ("오검출률 (목표 <0.05)", "오검출률", True),
     ]
     for label, key, low in rows:
-        A(f"| {label} | {score[key]} | {delta_str(score, before, key, low)} |")
+        A(f"| {label} | {score.get(key, 0)} | {delta_str(score, before, key, low)} |")
     A("")
     if before:
         A(f"직전 실행: {before.get('time')} (`{before.get('note') or '-'}`)")
@@ -689,10 +758,10 @@ def main():
 
     exts, run_names, st, n_rows = load_extracted(args.stage, args.file)
 
-    results, missed, false, scope, rescued = judge(
+    results, missed, false, scope, rescued, dup_pairs = judge(
         refs, exts, args.keep_math, args.min_sim, args.ok, args.gap_max,
         args.rescue)
-    score = score_of(results, missed, false, scope, refs, exts)
+    score = score_of(results, missed, false, scope, refs, exts, dup_pairs)
     figs, _fcases = score_figs(results)
 
     hist = os.path.join(args.outdir, "history.jsonl")
