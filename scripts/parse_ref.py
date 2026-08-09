@@ -44,7 +44,13 @@ from pypdf import PdfReader
 # 문제 시작. 앞 번호는 표시 번호, 뒤 번호는 해설 연결용 각주.
 # 추출기에 따라 앞 표시번호가 통째로 떨어져 나간다. 그래서 앞 번호는 선택으로 둔다.
 #   '107.107)' 과 '107)' 을 모두 잡는다.
-Q_ANY = re.compile(r"(?<![\d.])(?:(\d{1,3})\.\s?)?(\d{1,3})\)")
+# 일부 편집본(교학사 등)은 글자마다 공백이 끼어 '10. 1 0 )' 처럼 숫자 안에도
+# 공백이 들어간다 — 숫자 사이 공백을 허용하고, 쓸 때는 공백을 걷어낸다.
+Q_ANY = re.compile(r"(?<![\d.])(?:(\d(?:\s?\d){0,2})\s*\.\s?)?(\d(?:\s?\d){0,2})\s*\)")
+
+
+def _num(raw):
+    return int(re.sub(r"\s", "", raw))
 # 소단원 제목. 두 형태를 모두 본다.
 #   '1-1-1. 여러 가지 순열'  (번호가 앞)
 #   '여러 가지 순열1-1-1.'    (번호가 뒤 - 교학사 편집)
@@ -125,11 +131,16 @@ def find_solution_page(pages):
 
     max_seen = 0
     for i, lines in enumerate(pages):
-        nums = [int(m.group(2)) for s in lines for m in Q_ANY.finditer(s)]
+        nums = [_num(m.group(2)) for s in lines for m in Q_ANY.finditer(s)]
         if not nums:
             continue
         # 본문 안에 '4)' 같은 게 하나 섞여 있을 수 있으니
         # 작은 번호가 여러 개 몰려 나올 때만 해설 시작으로 본다
+        # 책 앞부분에서는 소단원 번호 재시작과 구분이 안 된다 — 해설은
+        # 뒤쪽 절반에서만 찾는다 (교학사 확통이 5쪽에서 오발한 실측).
+        if i < len(pages) * 0.4:
+            max_seen = max(max_seen, max(nums))
+            continue
         if max_seen >= 20 and min(nums) <= 3 \
                 and sum(1 for v in nums if v <= 10) >= 2:
             return i, "번호재시작"
@@ -258,7 +269,7 @@ def parse(path):
     cands = []
     for mm in Q_ANY.finditer(stream):
         a = mm.group(1)
-        cands.append((mm, int(a) if a else None, int(mm.group(2))))
+        cands.append((mm, _num(a) if a else None, _num(mm.group(2))))
     starts = pick_chain(cands)
     both = sum(1 for _m, a, b in starts if a is not None and a == b)
 
@@ -314,9 +325,9 @@ def parse(path):
         text = re.sub(r"(?<=[.．])\s*[가-힣 ]{0,8}내신대비.*$", "", text)
 
         problems.append({
-            "num": int(mm.group(2)),
-            "display": int(mm.group(1)) if mm.group(1) else None,
-            "footnote": int(mm.group(2)),
+            "num": _num(mm.group(2)),
+            "display": _num(mm.group(1)) if mm.group(1) else None,
+            "footnote": _num(mm.group(2)),
             "section": section,
             "block": block,
             "page": page,
