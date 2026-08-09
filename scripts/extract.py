@@ -558,7 +558,7 @@ def build(rows, page_width):
     # 3-2) 약한 표기 안전장치 5) — '준비 학습' 코너의 번호는 문제가 아니다
     #      (단원 도입 복습 문제, 기준 문제집 미수록. 실측: 공간도형 3쪽).
     #      글자 크기로 가르면 마무리 문제(작은 판)까지 잘린다 — 코너 제목으로 가른다.
-    prep = re.compile(r"준\s*비\s*학\s*습|준\s*비\s*하\s*기")
+    prep = re.compile(r"준[^가-힣]{0,2}비[^가-힣]{0,2}학[^가-힣]{0,2}습|준\s*비\s*하\s*기")
     filtered = []
     for c in cands:
         if c["name"] in WEAK_START:
@@ -670,6 +670,24 @@ def build(rows, page_width):
             "body": body, "lines": len(body),
             "figs": figs, "reason": reason,
         })
+
+    # 6-2) 약한 표기 사후 검사 — 확정된 본문 안에 명령형 어미가 없으면 문제가 아니다.
+    #      후보 시점의 창 검사는 이웃 문제의 어미를 주워 성질 나열('…수렴한다.')과
+    #      차례 항목('수열의 극한')을 통과시켰다 (채점판 v1 오검출 106건 중 최다 유형).
+    weakish = WEAK_START | {"두자리"}
+    survivors = []
+    for p in problems:
+        if p["name"] in weakish:
+            joined = "".join(txt(b) for b in p["body"])
+            # 의문형(…인가?)과 '…여라/어라' 어미도 발문이다 (지학사 실측 —
+            # 좁게 잡으면 진짜 문제가 같이 죽는다).
+            asks = bool(re.search(r"[?？]|[여아으]라[.．]?|시오|하라|보자", joined))
+            if not (ORDER_END.search(joined) or ORDER_END_ANY.search(joined) or asks):
+                for f in p["figs"]:
+                    used_fig.discard(id(f))
+                continue
+        survivors.append(p)
+    problems = survivors
 
     # 7) 발문이 그림을 가리키는데 본문에 그림이 없으면 인접 그림 추정
     figs_by_page = defaultdict(list)
