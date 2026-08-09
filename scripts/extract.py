@@ -69,7 +69,7 @@ START_PATTERNS = [
     ("두자리", re.compile(r"^\s*(0\d)(?!\d)"),                    "번호"),
     # 타 출판사 (v9). '01.' 은 위의 두자리가 먼저 맞으므로 여기는 점 있는 한 자리부터.
     ("번호점", re.compile(r"^\s*(\d{1,2})\s*[.．]\s*(?!\d)"),      "번호"),
-    ("번호", re.compile(r"^\s*(\d{1,2})(?=\s+[가-힣(])"),           "번호"),
+    ("번호", re.compile(r"^\s*(\d{1,2})(?=\s+(?:[가-힣(]|[A-Za-z]{2}|\d\s*,\s*\d))"), "번호"),
     # '1 6명이 원탁에…' — 번호 뒤에 수량 숫자가 바로 오면 한글 요구 판이 못 잡는다
     # (확통 실측: 연습문제 번호 + '6명이'). 수량 단위가 붙을 때만 좁게 허용한다.
     ("번호", re.compile(r"^\s*(\d{1,2})"
@@ -271,6 +271,13 @@ def is_shell(ln):
     return not txt(ln)
 
 
+# 번호가 뒤 수식 라텍스에 합쳐진 줄을 되돌린다 (확통 실측).
+#   '서술형 \\(6 \\quad 1,2,3,4,5\\) 가…' -> '서술형 6 1,2,3,4,5) 가…'
+#   '\\(20,1,2,3,4,5\\) 에서…'          -> '2 0,1,2,3,4,5) 에서…'
+DELATEX_QUAD = re.compile(r"^(\s*[가-힣]{0,4}\s*)\\\(\s*(\d{1,2})\s*\\quad\s*")
+DELATEX_MERGED = re.compile(r"^\s*\\\((\d)(?=\d\s*,\s*\d)")
+
+
 def match_start(ln):
     t = txt(ln)
     if not t or is_image_md(t):
@@ -278,10 +285,16 @@ def match_start(ln):
     fs = ln.get("font_size")
     if isinstance(fs, (int, float)) and fs > MAX_TITLE_FONT:
         return None
-    for name, pat, kind in START_PATTERNS:
-        m = pat.match(t)
-        if m:
-            return name, m.group(1), kind, t
+    variants = [t]
+    if DELATEX_QUAD.match(t):
+        variants.append(DELATEX_QUAD.sub(r"\1\2 ", t))
+    if DELATEX_MERGED.match(t):
+        variants.append(DELATEX_MERGED.sub(r"\1 ", t))
+    for t2 in variants:
+        for name, pat, kind in START_PATTERNS:
+            m = pat.match(t2)
+            if m:
+                return name, m.group(1), kind, t2
     return None
 
 
