@@ -117,6 +117,11 @@ def learn_boilerplate(pages_raw, min_ratio=0.4):
     sample = {}
     for lines in pages_raw:
         for s in {x for x in lines if len(x) >= 4}:
+            # 글자(한글·영문) 없는 줄은 머리말 후보가 아니다 — '191.' 같은
+            # 표시번호 줄은 가리면 전부 '#.' 이라 쪽마다 반복되는 것으로 오인돼
+            # 통째로 지워졌다 (교학사·지학사 고등수학 실측: 문제 6개만 남음).
+            if not re.search(r"[가-힣A-Za-z]", s):
+                continue
             k = mask(s)
             c[k] += 1
             sample.setdefault(k, s)
@@ -154,6 +159,15 @@ def find_solution_page(pages):
             continue
         if max_seen >= 20 and min(nums) <= 3 \
                 and sum(1 for v in nums if v <= 10) >= 2:
+            # 소단원 번호 재시작과 가르기: 진짜 해설이면 그 뒤로 큰 번호가
+            # 다시 나오지 않는다. 다음 두 쪽에 본문 수준 큰 번호가 보이면
+            # 아직 본문이다 (교학사 확통이 28쪽에서 오발한 실측 — 실제는 45쪽).
+            upcoming = [PR_num for j in range(i, min(i + 3, len(pages)))
+                        for s2 in pages[j] for m2 in Q_ANY.finditer(s2)
+                        for PR_num in [_num(_q_groups(m2)[1])]]
+            if any(v >= max_seen - 5 for v in upcoming):
+                max_seen = max(max_seen, max(nums))
+                continue
             return i, "번호재시작"
         max_seen = max(max_seen, max(nums))
     return None, None
