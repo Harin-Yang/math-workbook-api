@@ -799,6 +799,24 @@ def main():
     if not refs:
         sys.exit("기준 파일에서 문제를 찾지 못했습니다.")
 
+    # 수록 방침 (2026-08-10 사장님 확정): 개념 빈칸 박스·활동 상자는 문제로
+    # 뽑지 않는다. 기준 파일이 이런 항목을 실었어도 채점에서 제외한다 —
+    # 편집자마다 방침이 갈려 미검출이 부풀던 것 (확통 실측). 제외 수는 표에 밝힌다.
+    ORDER_ANY = re.compile(r"시오|하라|하여라|[여아으]라[.．\s]|구하|답하|서술|증명|풀어|쓰라|[?？]|인가|는가")
+    kept_refs, cut_concept, cut_activity = [], 0, 0
+    for r in refs:
+        t = r["text"]
+        if not ORDER_ANY.search(t):
+            if "보자" in t:
+                cut_activity += 1
+            else:
+                cut_concept += 1
+            continue
+        kept_refs.append(r)
+    refs = kept_refs
+    if cut_concept or cut_activity:
+        print(f"수록 방침 제외: 개념 박스 {cut_concept} / 활동 {cut_activity} (기준에서 뺌)")
+
     exts, run_names, st, n_rows = load_extracted(args.stage, args.file)
 
     results, missed, false, scope, rescued, dup_pairs = judge(
