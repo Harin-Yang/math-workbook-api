@@ -744,9 +744,11 @@ def build(rows, page_width):
                     used_fig.discard(id(f))
                 continue
             if not strong and soft:
-                # '…해 보자' 뿐인 것은 활동(토론·발표·추측)과 진짜 문제가 섞여
-                # 룰로 못 가른다 — LLM 판정 대상으로 넘긴다 (채점판 v2 잔여 최다 유형).
-                p["name"] = "활동의심"
+                # 수록 방침 (2026-08-10 확정): '~해 보자'체 활동은 문제로 뽑지
+                # 않는다 — 루나에게 묻지 않고 버린다 (비용도 준다).
+                for f in p["figs"]:
+                    used_fig.discard(id(f))
+                continue
         survivors.append(p)
     problems = survivors
 

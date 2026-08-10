@@ -35,6 +35,9 @@ PREFILTER_DROP = re.compile(
     r"|^\s*준\W{0,2}비\W{0,2}학\W{0,2}습"   # 준|비|학|습 코너 (비상 실측)
     r"|프로그램을 이용"
     r"|^\S*[ㄱ-ㅎㅏ-ㅣ]")   # 첫 낱말에 홀낱자가 섞이면 오독 조각이다 (쥴ㄹ…)
+# extract.py 사후 검사의 강한 어미 판과 같은 판 — 방침 필터가 서로 어긋나면 안 된다.
+ACTIVITY_STRONG = re.compile(r"[?？]|[여아으]라[.．]?|하라|시오|구해라|말해라")
+
 CALL_TIMEOUT_SECONDS = 60
 MAX_ITEM_CHARS = 700
 
@@ -131,6 +134,10 @@ def filter_unmarked(problems, txt, judge, progress=None):
             time.sleep(1.0)
             continue
         if ok:
+            # 수록 방침: 강한 발문 어미 없이 '보자'로만 끝나는 지문은 활동이다
+            # — 루나가 문제라고 해도 버린다 (기하 '성립함을 설명해 보자' 실측).
+            if "보자" in text and not ACTIVITY_STRONG.search(text):
+                continue
             accepted += 1
             kept.append(problem)
     return kept, {"asked": asked, "accepted": accepted, "failed": failed}
