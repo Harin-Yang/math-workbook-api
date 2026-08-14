@@ -70,6 +70,11 @@ def lint(hwpx_path, doc_path=None):
     if dangling:
         problems.append(f"manifest 에 없는 그림 참조: {dangling[:5]}")
 
+    # 3-2. 줄 좌표 금지 — 진품에는 없고, 넣으면 '문서 손상·변조 의심' 경고가
+    #      뜬다 (실물 사고 2회: 측정판 시절 + 2026-08-13 v15). 영구 금지.
+    if "linesegarray" in sec:
+        problems.append("linesegarray 발견 — 한/글이 손상·변조 의심 경고를 띄운다 (금지)")
+
     # 4. 2단
     cols = re.findall(r'colCount="(\d+)"', sec)
     if "2" not in cols:
