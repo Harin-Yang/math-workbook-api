@@ -622,7 +622,9 @@ def _hs(nodes, sty=None):
             out.append("{" + _hs(n["n"], sty) + "} over {" + _hs(n["d"], sty) + "}")
         elif k == "rad":
             if n["deg"]:
-                out.append("^{" + _hs(n["deg"], sty) + "} sqrt {" + _hs(n["e"], sty) + "}")
+                # n제곱근은 root n of 표기 — ^{n} sqrt 는 한/글이 못 읽어
+                # 빈 수식이 된다 (실물: 수식문법시험 [5][7] 안 보임, [6] 정상).
+                out.append("root " + _hs(n["deg"], sty) + " of {" + _hs(n["e"], sty) + "}")
             else:
                 out.append("sqrt {" + _hs(n["e"], sty) + "}")
         elif k == "sup":
