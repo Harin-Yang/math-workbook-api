@@ -52,6 +52,8 @@ from collections import Counter, defaultdict
 # ---- 문제 시작 표기 ----
 START_PATTERNS = [
     ("문제", re.compile(r"^\s*문제\s*(\d{1,4})"),                 "문제"),
+    # '탐구 문제 5' — 코너 이름이 앞에 붙은 문제 (미래엔 수학2 실측 누락)
+    ("문제", re.compile(r"^\s*(?:탐구|확인|심화)\s*문제\s*(\d{1,4})"), "문제"),
     ("예제", re.compile(r"^\s*(?:필수\s*)?예제\s*(\d{1,4})"),      "예제"),
     ("유제", re.compile(r"^\s*유제\s*(\d{1,4})"),                 "유제"),
     # '탐구 (1)' 은 탐구 활동의 소문항이지 독립 문제가 아니다. 괄호 없는 것만 인정.
@@ -126,7 +128,13 @@ ACTIVITY_INTRO = re.compile(r"(알아|살펴|생각해|확인해|정리해)\s*�
 
 # 같은 쪽 위에 복습 코너 머리가 있으면 아래 번호들은 이전 학년 복습이다
 # (지학사 '스스로 준비하는 중단원' 실측 — 발문은 진짜 문제와 똑같다).
-REVIEW_CORNER = re.compile(r"스스로\s*준\W{0,2}비|준\W{0,2}비\W{0,2}학\W{0,2}습")
+REVIEW_CORNER = re.compile(r"스스로\s*준\W{0,2}비|준\W{0,2}비\W{0,2}학\W{0,2}습"
+                           r"|창\W{0,2}의\W{0,2}융\W{0,2}합")   # 단원 전환 실생활 코너 (미래엔 탄산수)
+
+# 소단원 도입 코너 — 이 머리 아래(다음 머리 전까지)의 후보는 문제가 아니다.
+#   준비하기(복습)·다가서기(도입 글). 쪽 전체가 아니라 구간만 걸러야 한다 —
+#   같은 쪽 아래에 진짜 본문이 이어진다 (미래엔 수학2 실측).
+INTRO_CORNER = re.compile(r"^\s*(준\s*비\s*하\s*기|다\s*가\s*서\s*기)\s*$")
 WEAK_BACK = 3
 
 # 발문 끝을 알리는 명령형 어미. 뒤에 '(단, a>0)' 이 붙어도 끝으로 본다.
@@ -276,6 +284,8 @@ def is_shell(ln):
 #   '\\(20,1,2,3,4,5\\) 에서…'          -> '2 0,1,2,3,4,5) 에서…'
 DELATEX_QUAD = re.compile(r"^(\s*[가-힣]{0,4}\s*)\\\(\s*(\d{1,2})\s*\\quad\s*")
 DELATEX_MERGED = re.compile(r"^\s*\\\((\d)(?=\d\s*,\s*\d)")
+#   '예제 \(1 f(x)=…\)' -> '예제 1 \(f(x)=…\)' (미래엔 수학2 예제1 실측 누락)
+DELATEX_NAMED = re.compile(r"^(\s*[가-힣]{1,4}\s*)\\\(\s*(\d{1,2})\s+(?![.\d])")
 
 
 def match_start(ln):
@@ -290,6 +300,8 @@ def match_start(ln):
         variants.append(DELATEX_QUAD.sub(r"\1\2 ", t))
     if DELATEX_MERGED.match(t):
         variants.append(DELATEX_MERGED.sub(r"\1 ", t))
+    if DELATEX_NAMED.match(t):
+        variants.append(DELATEX_NAMED.sub(r"\1\2 \\(", t))
     for t2 in variants:
         for name, pat, kind in START_PATTERNS:
             m = pat.match(t2)
@@ -349,7 +361,7 @@ def learn_gaps(live):
     return out
 
 
-def find_unmarked(live, marked, bands, gap_thr):
+def find_unmarked(live, marked, bands, gap_thr, corner_idx=None):
     """'문제 N' 표기 없이 지문으로 시작하는 문제를 찾는다. (기본 꿨짐)"""
     if not marked:
         return []
@@ -369,6 +381,8 @@ def find_unmarked(live, marked, bands, gap_thr):
     for i, ln in enumerate(live):
         if any(abs(i - t) <= UNMARKED_NEAR for t in taken):
             continue
+        if corner_idx and i in corner_idx:
+            continue          # 준비하기·다가서기 구간의 지문은 문제가 아니다
         if ln.get("type") not in BODY_TYPES:
             continue
         t = txt(ln)
@@ -536,6 +550,16 @@ def build(rows, page_width):
         ln.get("line") if isinstance(ln.get("line"), int) else 10 ** 6,
         ry(ln) or 0))
 
+    # 2-2) 소단원 도입 코너(준비하기·다가서기) 구간 — 머리부터 다음 머리 전까지.
+    corner_idx = set()
+    in_corner = False
+    for idx, ln in enumerate(live):
+        t = (txt(ln) or "").strip()
+        if ln.get("type") == "section_header" or INTRO_CORNER.match(t):
+            in_corner = bool(INTRO_CORNER.match(t))
+        if in_corner:
+            corner_idx.add(idx)
+
     # 3) 시작 후보
     by_id = {}
     for ln in rows:
@@ -593,6 +617,9 @@ def build(rows, page_width):
             #      머리줄 type 이 page_info 라 live 에는 없다 — rows 에서 모은
             #      review_pages 로 쪽 단위 판정한다 (지학사 실측).
             if (ln.get("_file"), ln.get("_page")) in review_pages:
+                continue
+            # 4-3) 준비하기·다가서기 구간 안의 번호도 문제가 아니다.
+            if i in corner_idx:
                 continue
         cands.append({"idx": i, "line": ln, "name": m[0],
                       "raw": m[1], "kind": m[2]})
@@ -665,7 +692,7 @@ def build(rows, page_width):
 
     # 4-2) 표기 없이 지문으로 시작하는 문제 찾기 (기본 꿨짐)
     gap_thr = learn_gaps(live)
-    unmarked = find_unmarked(live, kept, bands, gap_thr) if UNMARKED else []
+    unmarked = find_unmarked(live, kept, bands, gap_thr, corner_idx) if UNMARKED else []
     if unmarked:
         kept = sorted(kept + unmarked, key=lambda c: c["idx"])
 

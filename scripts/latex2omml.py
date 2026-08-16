@@ -559,7 +559,39 @@ def _m(nodes, sty=None):
     return "".join(out)
 
 
+def _mathml_inner(latex, display=False):
+    m = to_mathml(latex, display)
+    return re.sub(r"^<math[^>]*>|</math>$", "", m)
+
+
+def _cases_to_mathml(match):
+    body = match.group(1)
+    rows = [r.strip() for r in re.split(r"\\\\", body) if r.strip()]
+    trs = []
+    for row in rows:
+        cols = [c.strip() for c in row.split("&")]
+        tds = "".join(f"<mtd>{_mathml_inner(c)}</mtd>" for c in cols if c)
+        trs.append(f"<mtr>{tds}</mtr>")
+    return ("<mrow><mo>{</mo><mtable columnalign='left'>"
+            + "".join(trs) + "</mtable></mrow>")
+
+
 def to_mathml(latex, display=False):
+    if "\\begin{cases}" in latex:
+        pieces = []
+        pos = 0
+        for mm in CASES_RE.finditer(latex):
+            pre = latex[pos:mm.start()].strip()
+            if pre:
+                pieces.append(_mathml_inner(pre, display))
+            pieces.append(_cases_to_mathml(mm))
+            pos = mm.end()
+        tail = latex[pos:].strip()
+        if tail:
+            pieces.append(_mathml_inner(tail, display))
+        mode = ' display="block"' if display else ""
+        return f'<math xmlns="http://www.w3.org/1998/Math/MathML"{mode}><mrow>' \
+               + "".join(pieces) + "</mrow></math>"
     body = _m(parse(latex))
     if not body.strip():
         raise Unsupported("빈 수식")
@@ -630,7 +662,13 @@ def _hs(nodes, sty=None):
         elif k == "sup":
             out.append("{" + _hs(n["base"], sty) + "} ^{" + _hs(n["sup"], sty) + "}")
         elif k == "sub":
-            out.append("{" + _hs(n["base"], sty) + "} _{" + _hs(n["sub"], sty) + "}")
+            base = _hs(n["base"], sty)
+            plain = re.sub(r"[{}\s]|rm", "", base)
+            if plain in ("lim", "min", "max"):
+                # 극한류는 아래끝(from) — _{} 로 쓰면 한/글이 옆에 붙인다 (실물).
+                out.append(base + " from {" + _hs(n["sub"], sty) + "}")
+            else:
+                out.append("{" + base + "} _{" + _hs(n["sub"], sty) + "}")
         elif k == "subsup":
             out.append("{" + _hs(n["base"], sty) + "} _{" + _hs(n["sub"], sty)
                        + "} ^{" + _hs(n["sup"], sty) + "}")
@@ -655,14 +693,49 @@ def _hs(nodes, sty=None):
         elif k == "delim":
             opener = n["open"] or "("
             closer = n["close"] or ")"
-            out.append("LEFT " + opener + " " + _hs(n["e"], sty) + " RIGHT " + closer)
+            inner = _hs(n["e"], sty)
+            tall = re.search(r"\bover\b|\bsqrt\b|\broot\b|\bpile\b|\bsum\b"
+                             r"|\bint\b|\bfrom\b", inner)
+            if tall or opener in "{}" or closer in "{}":
+                out.append("LEFT " + opener + " " + inner + " RIGHT " + closer)
+            else:
+                # 키 작은 내용은 평괄호 — LEFT( 는 자동 확대라 OCR 이 섞어 쓴
+                # 평괄호와 크기가 어긋난다 (실물: 미래엔 예제3 닫는 괄호만 큼).
+                out.append(opener + " " + inner + " " + closer)
         else:
             raise Unsupported(f"한/글로 내보낼 수 없는 조각: {k}")
     return " ".join(part for part in out if part.strip())
 
 
+CASES_RE = re.compile(r"\\begin\{cases\}(.*?)\\end\{cases\}", re.S)
+
+
+def _cases_to_pile(match):
+    body = match.group(1)
+    rows = [r.strip() for r in re.split(r"\\\\", body) if r.strip()]
+    parts = []
+    for row in rows:
+        cols = [c.strip() for c in row.split("&")]
+        parts.append(" ~~ ".join(_hs(parse(c), None) for c in cols if c))
+    return "LEFT \\{ pile{" + " # ".join(parts) + "}"
+
+
 def to_hwp_script(latex):
     """LaTeX -> 한/글 수식 스크립트. 못 옮기면 Unsupported."""
+    if "\\begin{cases}" in latex:
+        # 조건별 함수 — 왼쪽 큰 중괄호 + 세로 쌓기(pile) (미래엔 20쪽 실측)
+        out = []
+        pos = 0
+        for m in CASES_RE.finditer(latex):
+            pre = latex[pos:m.start()].strip()
+            if pre:
+                out.append(_hs(parse(pre), None))
+            out.append(_cases_to_pile(m))
+            pos = m.end()
+        tail = latex[pos:].strip()
+        if tail:
+            out.append(_hs(parse(tail), None))
+        return " ".join(out)
     body = _hs(parse(latex))
     if not body.strip():
         raise Unsupported("빈 수식")

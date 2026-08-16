@@ -196,8 +196,12 @@ class Cropper:
         self.pix[key] = out
         return out
 
-    def crop(self, ln, image_width):
-        """줄 하나를 오려 PNG 로 저장한다. 반환: (경로, 폭 mm) 또는 None"""
+    def crop(self, ln, image_width, trim_left=0):
+        """줄 하나를 오려 PNG 로 저장한다. 반환: (경로, 폭 mm) 또는 None
+
+        trim_left: 왼쪽에서 이만큼(픽셀) 더 잘라낸다 — 문제 번호가 크롭에
+        같이 찍히는 것을 막는 용도 (실물 피드백).
+        """
         if fitz is None:
             self.note("pymupdf없음")
             return None
@@ -220,7 +224,7 @@ class Cropper:
             self.note("원본쪽없음")
             return None
 
-        x0 = max(0, int(x) - PAD)
+        x0 = max(0, int(x) - PAD + max(0, int(trim_left)))
         y0 = max(0, int(y) - PAD)
         x1 = min(pw_px, int(x + w) + PAD)
         y1 = min(ph_px, int(y + h) + PAD)
@@ -474,7 +478,7 @@ def iter_blocks(problems, page_widths, cropper):
                 # 못 옮기면 그 줄만 예전처럼 그림으로 되돌린다.
                 # 표(\begin{tabular})는 뼈대가 수식 구분자 밖에 있어 변환 검사를
                 # 통과해 버린다 — 표가 보이면 무조건 그림으로 되돌린다.
-                parts = None if "\\begin{" in t else to_rich(t)
+                parts = None if ("\\begin{" in t and "\\begin{cases}" not in t) else to_rich(t)
                 if parts:
                     yield ("rich", parts, not last)
                     continue
