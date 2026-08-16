@@ -469,8 +469,34 @@ def _o(nodes, sty=None):
     return "".join(out)
 
 
+def _cases_to_omml(match):
+    body = match.group(1)
+    rows = [r.strip() for r in re.split(r"\\\\", body) if r.strip()]
+    es = []
+    for row in rows:
+        cols = [c.strip() for c in row.split("&") if c.strip()]
+        row_latex = " \\quad ".join(cols)
+        es.append("<m:e>" + _o(parse(row_latex)) + "</m:e>")
+    return ('<m:d><m:dPr><m:begChr m:val="{"/><m:endChr m:val=""/></m:dPr>'
+            "<m:e><m:eqArr>" + "".join(es) + "</m:eqArr></m:e></m:d>")
+
+
 def to_omml(latex):
     """LaTeX -> <m:oMath> XML 조각. 못 옮기면 Unsupported."""
+    latex = _normalize_cases(latex)
+    if "\\begin{cases}" in latex:
+        parts = []
+        pos = 0
+        for m in CASES_RE.finditer(latex):
+            pre = latex[pos:m.start()].strip()
+            if pre:
+                parts.append(_o(parse(pre)))
+            parts.append(_cases_to_omml(m))
+            pos = m.end()
+        tail = latex[pos:].strip()
+        if tail:
+            parts.append(_o(parse(tail)))
+        return f'<m:oMath xmlns:m="{M_NS}">' + "".join(parts) + "</m:oMath>"
     body = _o(parse(latex))
     if not body.strip():
         raise Unsupported("빈 수식")
@@ -523,8 +549,14 @@ def _m(nodes, sty=None):
             out.append(f"<msup><mrow>{_m(n['base'], sty)}</mrow>"
                        f"<mrow>{_m(n['sup'], sty)}</mrow></msup>")
         elif k == "sub":
-            out.append(f"<msub><mrow>{_m(n['base'], sty)}</mrow>"
-                       f"<mrow>{_m(n['sub'], sty)}</mrow></msub>")
+            base_m = _m(n['base'], sty)
+            if re.search(r">(?:lim|min|max)<", base_m):
+                # 극한류는 아래에 붙는다 — msub 는 옆 표기 (실물 피드백)
+                out.append(f"<munder><mrow>{base_m}</mrow>"
+                           f"<mrow>{_m(n['sub'], sty)}</mrow></munder>")
+            else:
+                out.append(f"<msub><mrow>{base_m}</mrow>"
+                           f"<mrow>{_m(n['sub'], sty)}</mrow></msub>")
         elif k == "subsup":
             out.append(f"<msubsup><mrow>{_m(n['base'], sty)}</mrow>"
                        f"<mrow>{_m(n['sub'], sty)}</mrow>"
