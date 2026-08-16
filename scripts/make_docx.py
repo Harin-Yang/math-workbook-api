@@ -478,7 +478,9 @@ def iter_blocks(problems, page_widths, cropper):
                 # 못 옮기면 그 줄만 예전처럼 그림으로 되돌린다.
                 # 표(\begin{tabular})는 뼈대가 수식 구분자 밖에 있어 변환 검사를
                 # 통과해 버린다 — 표가 보이면 무조건 그림으로 되돌린다.
-                parts = None if ("\\begin{" in t and "\\begin{cases}" not in t) else to_rich(t)
+                caseslike = ("\\begin{cases}" in t
+                             or ("\\begin{array}" in t and "\\left" in t))
+                parts = None if ("\\begin{" in t and not caseslike) else to_rich(t)
                 if parts:
                     yield ("rich", parts, not last)
                     continue

@@ -577,6 +577,7 @@ def _cases_to_mathml(match):
 
 
 def to_mathml(latex, display=False):
+    latex = _normalize_cases(latex)
     if "\\begin{cases}" in latex:
         pieces = []
         pos = 0
@@ -708,6 +709,15 @@ def _hs(nodes, sty=None):
 
 
 CASES_RE = re.compile(r"\\begin\{cases\}(.*?)\\end\{cases\}", re.S)
+# Mathpix 는 조건별 함수를 \left\{\begin{array}{ll}…\end{array}\right. 로 쓴다
+ARRAY_CASES_RE = re.compile(
+    r"\\left\\?\{\s*\\begin\{array\}\{[a-z ]*\}(.*?)\\end\{array\}\s*\\right\s*\.",
+    re.S)
+
+
+def _normalize_cases(latex):
+    return ARRAY_CASES_RE.sub(lambda m: "\\begin{cases}" + m.group(1) + "\\end{cases}",
+                              latex)
 
 
 def _cases_to_pile(match):
@@ -722,6 +732,7 @@ def _cases_to_pile(match):
 
 def to_hwp_script(latex):
     """LaTeX -> 한/글 수식 스크립트. 못 옮기면 Unsupported."""
+    latex = _normalize_cases(latex)
     if "\\begin{cases}" in latex:
         # 조건별 함수 — 왼쪽 큰 중괄호 + 세로 쌓기(pile) (미래엔 20쪽 실측)
         out = []
