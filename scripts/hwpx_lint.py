@@ -75,10 +75,11 @@ def lint(hwpx_path, doc_path=None):
     if "linesegarray" in sec:
         problems.append("linesegarray 발견 — 한/글이 손상·변조 의심 경고를 띄운다 (금지)")
 
-    # 4. 2단
+    # 4. 배치 — 2x2 표(셀=문제) 또는 2단 중 하나는 있어야 한다
     cols = re.findall(r'colCount="(\d+)"', sec)
-    if "2" not in cols:
-        problems.append(f"2단 설정 없음 (colCount={cols or '없음'})")
+    n_tbl = len(re.findall(r"<hp:tbl[ >]", sec))
+    if "2" not in cols and not n_tbl:
+        problems.append(f"배치 없음 (colCount={cols or '없음'}, 표 0개)")
 
     # 5. 수식
     scripts = re.findall(r"<hp:script>(.*?)</hp:script>", sec, re.S)
