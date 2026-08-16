@@ -753,13 +753,15 @@ def _normalize_cases(latex):
 
 
 def _cases_to_pile(match):
+    # cases{a & 조건 # b & 조건} — 한/글이 왼쪽 큰 중괄호까지 그려 준다
+    # (실물 판정: 중괄호4방식 시험에서 방식3만 제대로).
     body = match.group(1)
     rows = [r.strip() for r in re.split(r"\\\\", body) if r.strip()]
     parts = []
     for row in rows:
         cols = [c.strip() for c in row.split("&")]
-        parts.append(" ~~ ".join(_hs(parse(c), None) for c in cols if c))
-    return "LEFT \\{ pile{" + " # ".join(parts) + "}"
+        parts.append(" & ".join(_hs(parse(c), None) for c in cols if c))
+    return "cases{" + " # ".join(parts) + "}"
 
 
 def to_hwp_script(latex):
