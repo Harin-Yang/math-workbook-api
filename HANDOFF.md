@@ -1476,3 +1476,13 @@ HWPX 교훈 넷: ① 밑판은 한/글이 저장한 진품이어야 한다 ② l
   커밋이 사장님 최신 지시를 되돌리는지 반드시 대조할 것.**
 - 도메인 personalpms.cloud: Caddy 대기 설정 완료, DNS 変更은 사장님 몫
   (A @ / www → 158.247.240.59). 감시 모니터 가동 중.
+
+### 2026-08-17 (계속) — 피그마 랜딩 적용 (backend 1.51.41)
+- 사장님 피그마 Make 시안(React+Vite)을 서버에서 빌드해 루트(/)에 랜딩으로.
+  구조: / = 소개 랜딩 → /mathocr = 업로드 앱 → /mathocr/edit = 편집기.
+- 시안 소스: /root/피그마시안/"AI Math Workbook Editor" — 수정 후
+  `npx vite build` → dist/ 를 app/static/landing/ 에 복사 → deploy.
+  에셋은 main.py /assets/{name} 라우트 (이름 검증).
+- 브랜드 MathPick→Matharin, CTA 전부 /mathocr 연결.
+- **요금제·후기 섹션 비활성** (사장님 지시 — 가상 후기·미확정 가격).
+  다시 켤 땐 App.tsx 렌더에 <Pricing/> <Testimonials/> 복원 + 내비 '요금제'.
