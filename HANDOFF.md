@@ -1508,6 +1508,26 @@ HWPX 교훈 넷: ① 밑판은 한/글이 저장한 진품이어야 한다 ② l
   실수 커밋 → .gitignore 로 정리. **git add landing-src 전에 node_modules
   존재 여부 확인할 것.**
 
+### 2026-08-23 — '원본 N쪽' 버튼이 안 보이던 진짜 원인 (테마 CSS !important)
+- 사장님이 **네 번** 지적. 편집기 CSS(`.pg.pgbtn`)를 고치고 인라인 스타일까지
+  넣었는데도 그대로였다.
+- **진단 방법(추측 금지)**: 헤드리스 크로미엄으로 편집기를 iframe 에 띄우고
+  `getComputedStyle` 을 찍어 봤더니 `bg: rgba(243,240,234,.03)`,
+  `color: rgb(243,240,234)` — 흰 종이 위 크림색 글자라 사실상 안 보였다.
+- **원인**: 테마 주입 레이어 `matharin-studio-polish.css` 의
+  `.matharin-editor button { background: rgba(243,240,234,.032) !important;
+  color: … !important }` 가 모든 버튼을 덮고 있었다. **!important 라 인라인
+  스타일도 밀린다.** 편집기 파일만 고쳐서는 절대 안 바뀐다.
+- **수정**: 같은 파일에 `.matharin-editor .pg.pgbtn{...!important}` 예외 추가
+  (진한 회색 #4b5261 채움 + 흰 글씨), `POLISH_HREF` 버전을 20260823a 로 올려
+  캐시 무효화. 캡처로 확인 완료.
+- **교훈**: 편집기·가입 화면은 `app_theme.install_app_theme` 이 3개 CSS 를
+  주입한다(app-theme / studio-polish / typography-polish). 스타일이 안 먹으면
+  **여기부터 확인**할 것. 화면 문제는 캡처+computed style 로 검증할 것.
+- 같은 라운드: 좌측 패널 기본 폭 313px(+20%), '문제 가져오기' 문구,
+  원본 박스를 position:fixed 로 완전 고정(헤더 아래 10px·좌 10px·하단 10px,
+  본문은 패널 폭만큼 밀어냄 — 스크롤해도 움직이지 않음).
+
 ### 2026-08-23 — 정답·해설 기능 V2 로 이관 (현재 버전에서 제외)
 - 사장님 결정: **매핑 정확도가 부족해 이번 버전에서는 정답·해설을 전부 뺀다.**
 - 제거된 것:
